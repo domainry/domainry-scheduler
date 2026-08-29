@@ -28,3 +28,52 @@ func TestRepositoryRootContainsOnlyReviewedPackages(t *testing.T) {
 		}
 	}
 }
+
+func TestSchedulerOwnsDurableStateInsteadOfBorrowingRunStore(t *testing.T) {
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve architecture test path")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+	factory, err := os.ReadFile(filepath.Join(root, "module", "factory.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(factory)
+	for _, required := range []string{"SchemaMigrations", "ApplyOwnedMigrations", "NewStore"} {
+		if !strings.Contains(text, required) {
+			t.Errorf("Scheduler Module factory does not own %s", required)
+		}
+	}
+	if strings.Contains(text, "host.Runs()") {
+		t.Error("Scheduler Module must not borrow durable RunStore from Runtime")
+	}
+	for _, required := range []string{
+		"internal/infrastructure/persistence/schema.go",
+		"internal/infrastructure/persistence/store.go",
+	} {
+		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(required))); err != nil || info.IsDir() {
+			t.Errorf("source-owned Scheduler persistence %q is missing", required)
+		}
+	}
+}
+
+func TestSchedulerPersistenceUsesDomainryORM(t *testing.T) {
+	_, source, _, _ := runtime.Caller(0)
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "infrastructure", "persistence"))
+	for _, name := range []string{"schema.go", "store.go", "migration.go"} {
+		raw, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		if !strings.Contains(text, "github.com/domainry/domainry-orm/") {
+			t.Errorf("Scheduler persistence %s bypasses domainry-orm", name)
+		}
+		for _, rawSQL := range []string{`"SELECT `, `"INSERT INTO `, `"UPDATE `, `"DELETE FROM `, `"CREATE TABLE `} {
+			if strings.Contains(text, rawSQL) {
+				t.Errorf("Scheduler persistence %s contains handwritten SQL %s", name, rawSQL)
+			}
+		}
+	}
+}

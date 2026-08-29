@@ -12,6 +12,30 @@ SaaS environment variables:
 - `SCHEDULER_SAAS_ENDPOINT`
 - `SCHEDULER_SAAS_TOKEN`
 
+For a single-Runtime Scheduler SaaS process, the callback gateway can be
+configured with:
+
+- `SCHEDULER_RUNTIME_ENDPOINT`
+- `SCHEDULER_RUNTIME_SERVICE_CREDENTIAL`
+
+The service composition is intentionally explicit:
+
+```go
+gateway, err := dispatchgateway.NewRemote(dispatchgateway.RemoteConfigFromEnvironment())
+service, err := server.NewDatabaseService(server.DatabaseServiceOptions{
+    Database: db, Driver: driver, Schema: schema, WorkerID: workerID,
+    Worker: schedulersdk.WorkerConfig{Enabled: true},
+    Downstreams: server.RemoteDownstreams(gateway),
+})
+handler := server.New(server.Options{BearerToken: controlPlaneToken, Service: service})
+```
+
+Multi-tenant services use `server.RemoteDownstreamsByApplication` to resolve a
+different callback endpoint and credential for each Runtime. Scheduler tables,
+leases, run evidence and the standalone `_schema_migrations` ledger stay in the
+Scheduler database. Module mode uses the Runtime pool and shared migration
+ledger, but the same tables and repository remain Scheduler-owned.
+
 The `server` package exposes the matching authenticated HTTP protocol over an implementation of `server.Service`.
 
 ## Targets

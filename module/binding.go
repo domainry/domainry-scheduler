@@ -18,6 +18,8 @@ import (
 type binding struct {
 	application schedulersdk.ApplicationRef
 	host        modulehost.Host
+	runs        modulehost.RunStore
+	mode        schedulersdk.DeploymentMode
 	ctx         context.Context
 	cancel      context.CancelFunc
 	mu          sync.RWMutex
@@ -27,12 +29,12 @@ type binding struct {
 	closeOnce   sync.Once
 }
 
-func newBinding(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host) *binding {
-	return &binding{application: application, host: host, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute}
+func newBinding(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, runs modulehost.RunStore, mode schedulersdk.DeploymentMode) *binding {
+	return &binding{application: application, host: host, runs: runs, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute}
 }
 
-func (*binding) Descriptor() schedulersdk.Descriptor {
-	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeModule, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence"}}
+func (b *binding) Descriptor() schedulersdk.Descriptor {
+	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: b.mode, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence"}}
 }
 
 func (b *binding) Reconcile(ctx context.Context) error {
@@ -54,13 +56,17 @@ func (b *binding) Reconcile(ctx context.Context) error {
 		next[definition.Key] = definition
 		if strings.EqualFold(strings.TrimSpace(definition.Status), "enabled") {
 			active = append(active, definition.Key)
-			if err := b.host.Runs().Reconcile(ctx, definition, schedule.NextSchedule(definition.Schedule, now)); err != nil {
+			next := schedule.NextSchedule(definition.Schedule, now)
+			if !definition.InitialNextRunAt.IsZero() && definition.InitialNextRunAt.Before(next) {
+				next = definition.InitialNextRunAt.UTC()
+			}
+			if err := b.runs.Reconcile(ctx, definition, next); err != nil {
 				return fmt.Errorf("reconcile Scheduler definition %s: %w", definition.Key, err)
 			}
 		}
 	}
 	sort.Strings(active)
-	if err := b.host.Runs().DisableMissing(ctx, active, snapshot.Revision); err != nil {
+	if err := b.runs.DisableMissing(ctx, active, snapshot.Revision); err != nil {
 		return fmt.Errorf("disable removed Scheduler definitions: %w", err)
 	}
 	b.mu.Lock()
@@ -101,7 +107,7 @@ func (b *binding) Tick(ctx context.Context, now time.Time, limit int) (int, erro
 	if limit <= 0 {
 		limit = 25
 	}
-	due, err := b.host.Runs().Due(ctx, now, limit)
+	due, err := b.runs.Due(ctx, now, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -128,7 +134,7 @@ func (b *binding) TriggerNow(ctx context.Context, key, reason string) (scheduler
 	}
 	now := time.Now().UTC()
 	item := modulehost.DueTrigger{Definition: definition, ScheduledFor: now}
-	run, claimed, err := b.host.Runs().Claim(ctx, item, b.currentLeaseTTL())
+	run, claimed, err := b.runs.Claim(ctx, item, b.currentLeaseTTL())
 	if err != nil || !claimed {
 		return run, err
 	}
@@ -138,7 +144,7 @@ func (b *binding) TriggerNow(ctx context.Context, key, reason string) (scheduler
 }
 
 func (b *binding) dispatch(ctx context.Context, item modulehost.DueTrigger) error {
-	run, claimed, err := b.host.Runs().Claim(ctx, item, b.currentLeaseTTL())
+	run, claimed, err := b.runs.Claim(ctx, item, b.currentLeaseTTL())
 	if err != nil || !claimed {
 		return err
 	}
@@ -173,7 +179,7 @@ func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 			}
 		default:
 		}
-		_ = b.host.Runs().Fail(ctx, run, err, nextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
+		_ = b.runs.Fail(ctx, run, err, nextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
 		return err
 	}
 	select {
@@ -185,10 +191,10 @@ func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 	}
 	if strings.TrimSpace(receipt.ID) == "" {
 		err = fmt.Errorf("downstream owner returned no durable receipt")
-		_ = b.host.Runs().Fail(ctx, run, err, nextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
+		_ = b.runs.Fail(ctx, run, err, nextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
 		return err
 	}
-	return b.host.Runs().Accept(ctx, run, receipt)
+	return b.runs.Accept(ctx, run, receipt)
 }
 
 func (b *binding) renewLease(ctx context.Context, cancel context.CancelFunc, run schedulersdk.Run, ttl time.Duration, stop <-chan struct{}, result chan<- error) {
@@ -205,7 +211,7 @@ func (b *binding) renewLease(ctx context.Context, cancel context.CancelFunc, run
 		case <-stop:
 			return
 		case <-ticker.C:
-			_, owned, err := b.host.Runs().Renew(ctx, run, ttl)
+			_, owned, err := b.runs.Renew(ctx, run, ttl)
 			if err == nil && owned {
 				continue
 			}
@@ -244,7 +250,7 @@ func nextRetry(policy schedulersdk.Policy, attempt int, now time.Time) time.Time
 }
 
 func (b *binding) Runs(ctx context.Context, limit int) ([]schedulersdk.Run, error) {
-	return b.host.Runs().List(ctx, limit)
+	return b.runs.List(ctx, limit)
 }
 
 func (b *binding) Start(ctx context.Context, config schedulersdk.WorkerConfig) <-chan struct{} {

@@ -67,15 +67,13 @@ func TestDispatchCancelsWhenDatabaseLeaseIsLost(t *testing.T) {
 		<-ctx.Done()
 		return schedulersdk.DownstreamReceipt{}, ctx.Err()
 	}
-	apiBinding, err := NewFactory(Options{}).OpenModule(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	concrete := apiBinding.(*binding)
+	ownerCtx, cancel := context.WithCancel(t.Context())
+	apiBinding := newBinding(ownerCtx, cancel, schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host, host, schedulersdk.DeploymentModeModule)
+	concrete := apiBinding
 	concrete.mu.Lock()
 	concrete.leaseTTL = 15 * time.Millisecond
 	concrete.mu.Unlock()
-	_, err = apiBinding.Tick(t.Context(), now, 1)
+	_, err := apiBinding.Tick(t.Context(), now, 1)
 	if err == nil || host.renewed == 0 || host.accepted != 0 {
 		t.Fatalf("err=%v renewed=%d accepted=%d", err, host.renewed, host.accepted)
 	}
@@ -88,10 +86,8 @@ func TestModuleOwnsClockButRoutesRuntimeCallbackToHostDispatcher(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	definition := schedulersdk.Definition{Key: "partner_sync", Name: "Partner sync", Status: "enabled", Revision: "v1", Schedule: schedulersdk.Schedule{Type: "interval", IntervalSeconds: 60}, Target: schedulersdk.TargetRef{Type: "http", ConnectionKey: "partner", Operation: "sync", DispatchMode: "runtime_callback"}}
 	host := &hostStub{definition: definition, due: []modulehost.DueTrigger{{Definition: definition, ScheduledFor: now}}}
-	binding, err := NewFactory(Options{}).OpenModule(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ownerCtx, cancel := context.WithCancel(t.Context())
+	binding := newBinding(ownerCtx, cancel, schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host, host, schedulersdk.DeploymentModeModule)
 	if err := binding.Reconcile(t.Context()); err != nil {
 		t.Fatal(err)
 	}
