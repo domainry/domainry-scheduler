@@ -10,12 +10,18 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/saashost"
 )
 
-type Factory struct{}
+type Factory struct{ transport saashost.Transport }
 
-func NewFactory() Factory { return Factory{} }
+func NewFactory(transport ...saashost.Transport) Factory {
+	var selected saashost.Transport
+	if len(transport) > 0 {
+		selected = transport[0]
+	}
+	return Factory{transport: selected}
+}
 
-func (Factory) Open(ctx context.Context, application schedulersdk.ApplicationRef) (schedulersdk.Binding, error) {
-	return nil, fmt.Errorf("Scheduler SaaS requires saashost.Transport")
+func (f Factory) Open(ctx context.Context, application schedulersdk.ApplicationRef) (schedulersdk.Binding, error) {
+	return f.OpenSaaS(ctx, application, f.transport)
 }
 
 func (Factory) OpenSaaS(ctx context.Context, application schedulersdk.ApplicationRef, transport saashost.Transport) (schedulersdk.Binding, error) {
