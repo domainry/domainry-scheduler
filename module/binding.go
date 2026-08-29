@@ -11,8 +11,8 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
-	httpexecutor "github.com/domainry/domainry-scheduler/executor/http"
-	"github.com/domainry/domainry-scheduler/schedule"
+	"github.com/domainry/domainry-scheduler-sdk/schedule"
+	httpexecutor "github.com/domainry/domainry-scheduler/internal/executor/http"
 )
 
 type binding struct {

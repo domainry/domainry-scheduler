@@ -22,3 +22,19 @@ The `server` package exposes the matching authenticated HTTP protocol over an im
   - `direct` uses Scheduler's HTTP executor, with idempotency/window headers, bounded responses, HMAC signing and retry classification.
 
 Definitions are configuration. A successful downstream call must return a durable receipt before a run is accepted.
+
+## Repository layout
+
+```text
+admin/                    Scheduler target-editor npm package
+internal/executor/http/   private direct-HTTP dispatch adapter
+module/                   public in-process Module factory and binding
+remote/                   public Scheduler SaaS client binding
+server/                   public Scheduler SaaS HTTP server protocol
+```
+
+Only `module`, `remote`, and `server` are public Go packages. Implementation
+adapters stay below `internal` so applications cannot couple to them directly.
+The deterministic recurrence functions live in
+`domainry-scheduler-sdk/schedule` beside the shared `Schedule` contract and are
+used by Module, SaaS, and Runtime compatibility paths.
