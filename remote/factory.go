@@ -9,9 +9,13 @@ import (
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	"github.com/domainry/domainry-scheduler-sdk/saashost"
+	"github.com/domainry/domainry-scheduler-sdk/saashost/httptransport"
 )
 
-type Factory struct{ transport saashost.Transport }
+type Factory struct {
+	transport  saashost.Transport
+	httpConfig *httptransport.Config
+}
 
 func NewFactory(transport ...saashost.Transport) Factory {
 	var selected saashost.Transport
@@ -20,6 +24,8 @@ func NewFactory(transport ...saashost.Transport) Factory {
 	}
 	return Factory{transport: selected}
 }
+
+func NewHTTPFactory(config httptransport.Config) Factory { return Factory{httpConfig: &config} }
 
 func (f Factory) Open(ctx context.Context, application schedulersdk.ApplicationRef) (schedulersdk.Binding, error) {
 	return nil, fmt.Errorf("Scheduler SaaS requires Runtime host capabilities")
@@ -30,6 +36,13 @@ func (f Factory) OpenSaaS(ctx context.Context, application schedulersdk.Applicat
 		return nil, err
 	}
 	transport := f.transport
+	var err error
+	if transport == nil && f.httpConfig != nil {
+		transport, err = httptransport.New(*f.httpConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if transport == nil {
 		return nil, fmt.Errorf("Scheduler SaaS transport is required")
 	}
