@@ -22,3 +22,5 @@ require (
 )
 
 replace github.com/domainry/domainry-scheduler-sdk => ../domainry-scheduler-sdk
+
+replace github.com/domainry/domainry-orm => ../domainry-orm
