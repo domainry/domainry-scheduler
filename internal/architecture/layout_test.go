@@ -48,6 +48,11 @@ func TestSchedulerOwnsDurableStateInsteadOfBorrowingRunStore(t *testing.T) {
 	if strings.Contains(text, "host.Runs()") {
 		t.Error("Scheduler Module must not borrow durable RunStore from Runtime")
 	}
+	for _, forbidden := range []string{"sql.Open", "InitializeOwned", "SetMaxOpenConns", "PRAGMA"} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("Scheduler Module must reuse the host pool instead of initializing it through %q", forbidden)
+		}
+	}
 	for _, required := range []string{
 		"internal/infrastructure/persistence/schema.go",
 		"internal/infrastructure/persistence/store.go",
