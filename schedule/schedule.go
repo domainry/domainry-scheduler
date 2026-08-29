@@ -16,6 +16,15 @@ func Data(value schedulersdk.Schedule) map[string]any {
 	if value.IntervalSeconds > 0 {
 		data["interval_seconds"] = value.IntervalSeconds
 	}
+	if value.TimeOfDay != "" {
+		data["time_of_day"] = value.TimeOfDay
+	}
+	if value.DayOfWeek != "" {
+		data["day_of_week"] = value.DayOfWeek
+	}
+	if value.DayOfMonth > 0 {
+		data["day_of_month"] = value.DayOfMonth
+	}
 	return data
 }
 
@@ -35,8 +44,16 @@ func Validate(value schedulersdk.Schedule) error {
 			return fmt.Errorf("scheduler cron expression is invalid")
 		}
 	case "daily_at", "weekly_at", "monthly_at":
-		if _, _, _, ok := ParseClock(value.Expression); !ok {
+		if _, _, _, ok := ParseClock(FirstNonEmpty(value.TimeOfDay, value.Expression)); !ok {
 			return fmt.Errorf("scheduler wall clock is invalid")
+		}
+		if Type(data) == "weekly_at" {
+			if _, ok := ParseWeekday(value.DayOfWeek); !ok {
+				return fmt.Errorf("scheduler weekday is invalid")
+			}
+		}
+		if Type(data) == "monthly_at" && (value.DayOfMonth < 1 || value.DayOfMonth > 31) {
+			return fmt.Errorf("scheduler month day is invalid")
 		}
 	default:
 		return fmt.Errorf("unsupported scheduler type %q", value.Type)

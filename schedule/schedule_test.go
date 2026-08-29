@@ -3,6 +3,8 @@ package schedule
 import (
 	"testing"
 	"time"
+
+	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 )
 
 func TestScheduleMatrix(t *testing.T) {
@@ -41,5 +43,22 @@ func TestParsingAndTimezone(t *testing.T) {
 	got := Next(map[string]any{"schedule_type": "daily_at", "time_of_day": "21:00", "timezone": "Asia/Shanghai"}, now)
 	if want := time.Date(2026, 7, 19, 13, 0, 0, 0, time.UTC); !got.Equal(want) {
 		t.Fatalf("timezone next=%s want=%s", got, want)
+	}
+}
+
+func TestCalendarProtocolPreservesWeekdayAndMonthDay(t *testing.T) {
+	weekly := schedulersdk.Schedule{Type: "weekly_at", TimeOfDay: "09:30", DayOfWeek: "monday", Timezone: "UTC"}
+	if err := Validate(weekly); err != nil {
+		t.Fatal(err)
+	}
+	if next := NextSchedule(weekly, time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)); next.Weekday() != time.Monday || next.Hour() != 9 || next.Minute() != 30 {
+		t.Fatalf("weekly next=%s", next)
+	}
+	monthly := schedulersdk.Schedule{Type: "monthly_at", TimeOfDay: "08:15", DayOfMonth: 12, Timezone: "UTC"}
+	if err := Validate(monthly); err != nil {
+		t.Fatal(err)
+	}
+	if next := NextSchedule(monthly, time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)); next.Day() != 12 || next.Month() != time.September {
+		t.Fatalf("monthly next=%s", next)
 	}
 }
