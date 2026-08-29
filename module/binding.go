@@ -153,7 +153,7 @@ func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 	defer cancel()
 	var receipt schedulersdk.DownstreamReceipt
 	var err error
-	if run.Trigger.Target.Type == "http" {
+	if run.Trigger.Target.Type == "http" && strings.EqualFold(strings.TrimSpace(run.Trigger.Target.DispatchMode), "direct") {
 		receipt, err = httpexecutor.New(b.host.HTTPConnections(), nil).Dispatch(dispatchCtx, run.Trigger)
 	} else {
 		receipt, err = b.host.Dispatcher().Dispatch(dispatchCtx, run.Trigger)
