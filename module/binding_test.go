@@ -14,6 +14,10 @@ type hostStub struct {
 	due        []modulehost.DueTrigger
 	dispatched int
 	accepted   int
+	lease      bool
+	renewed    int
+	loseLease  bool
+	dispatchFn func(context.Context) (schedulersdk.DownstreamReceipt, error)
 }
 
 func (h *hostStub) Definitions() modulehost.DefinitionProvider         { return h }
@@ -30,8 +34,16 @@ func (h *hostStub) Due(context.Context, time.Time, int) ([]modulehost.DueTrigger
 	h.due = nil
 	return due, nil
 }
-func (*hostStub) Claim(_ context.Context, due modulehost.DueTrigger, _ time.Duration) (schedulersdk.Run, bool, error) {
-	return schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: due.Definition.Key, DefinitionRev: due.Definition.Revision, ScheduledFor: due.ScheduledFor, WindowKey: "window", Target: due.Definition.Target, IdempotencyKey: "scheduler:daily:window", Attempt: 1}, Status: "leased"}, true, nil
+func (h *hostStub) Claim(_ context.Context, due modulehost.DueTrigger, ttl time.Duration) (schedulersdk.Run, bool, error) {
+	run := schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: due.Definition.Key, DefinitionRev: due.Definition.Revision, ScheduledFor: due.ScheduledFor, WindowKey: "window", Target: due.Definition.Target, IdempotencyKey: "scheduler:daily:window", Attempt: 1}, Status: "leased"}
+	if h.lease {
+		run.Lease = schedulersdk.Lease{Owner: "worker-a", Token: 1, ExpiresAt: time.Now().Add(ttl)}
+	}
+	return run, true, nil
+}
+func (h *hostStub) Renew(_ context.Context, run schedulersdk.Run, _ time.Duration) (schedulersdk.Run, bool, error) {
+	h.renewed++
+	return run, !h.loseLease, nil
 }
 func (h *hostStub) Accept(context.Context, schedulersdk.Run, schedulersdk.DownstreamReceipt) error {
 	h.accepted++
@@ -39,9 +51,34 @@ func (h *hostStub) Accept(context.Context, schedulersdk.Run, schedulersdk.Downst
 }
 func (*hostStub) Fail(context.Context, schedulersdk.Run, error, time.Time) error { return nil }
 func (*hostStub) List(context.Context, int) ([]schedulersdk.Run, error)          { return nil, nil }
-func (h *hostStub) Dispatch(context.Context, schedulersdk.Trigger) (schedulersdk.DownstreamReceipt, error) {
+func (h *hostStub) Dispatch(ctx context.Context, _ schedulersdk.Trigger) (schedulersdk.DownstreamReceipt, error) {
 	h.dispatched++
+	if h.dispatchFn != nil {
+		return h.dispatchFn(ctx)
+	}
 	return schedulersdk.DownstreamReceipt{ID: "downstream-1", Owner: "integration", Status: "accepted"}, nil
+}
+
+func TestDispatchCancelsWhenDatabaseLeaseIsLost(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	definition := schedulersdk.Definition{Key: "leased", Status: "enabled", Revision: "v1", Schedule: schedulersdk.Schedule{Type: "interval", IntervalSeconds: 60}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "workflow", Operation: "run"}}
+	host := &hostStub{definition: definition, due: []modulehost.DueTrigger{{Definition: definition, ScheduledFor: now}}, lease: true, loseLease: true}
+	host.dispatchFn = func(ctx context.Context) (schedulersdk.DownstreamReceipt, error) {
+		<-ctx.Done()
+		return schedulersdk.DownstreamReceipt{}, ctx.Err()
+	}
+	apiBinding, err := NewFactory(Options{}).OpenModule(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	concrete := apiBinding.(*binding)
+	concrete.mu.Lock()
+	concrete.leaseTTL = 15 * time.Millisecond
+	concrete.mu.Unlock()
+	_, err = apiBinding.Tick(t.Context(), now, 1)
+	if err == nil || host.renewed == 0 || host.accepted != 0 {
+		t.Fatalf("err=%v renewed=%d accepted=%d", err, host.renewed, host.accepted)
+	}
 }
 func (*hostStub) ResolveHTTPConnection(context.Context, string) (modulehost.HTTPConnection, error) {
 	return modulehost.HTTPConnection{}, nil

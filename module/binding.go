@@ -22,12 +22,13 @@ type binding struct {
 	cancel      context.CancelFunc
 	mu          sync.RWMutex
 	definitions map[string]schedulersdk.Definition
+	leaseTTL    time.Duration
 	startOnce   sync.Once
 	closeOnce   sync.Once
 }
 
 func newBinding(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host) *binding {
-	return &binding{application: application, host: host, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}}
+	return &binding{application: application, host: host, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute}
 }
 
 func (*binding) Descriptor() schedulersdk.Descriptor {
@@ -127,7 +128,7 @@ func (b *binding) TriggerNow(ctx context.Context, key, reason string) (scheduler
 	}
 	now := time.Now().UTC()
 	item := modulehost.DueTrigger{Definition: definition, ScheduledFor: now}
-	run, claimed, err := b.host.Runs().Claim(ctx, item, definition.Policy.Timeout)
+	run, claimed, err := b.host.Runs().Claim(ctx, item, b.currentLeaseTTL())
 	if err != nil || !claimed {
 		return run, err
 	}
@@ -137,7 +138,7 @@ func (b *binding) TriggerNow(ctx context.Context, key, reason string) (scheduler
 }
 
 func (b *binding) dispatch(ctx context.Context, item modulehost.DueTrigger) error {
-	run, claimed, err := b.host.Runs().Claim(ctx, item, item.Definition.Policy.Timeout)
+	run, claimed, err := b.host.Runs().Claim(ctx, item, b.currentLeaseTTL())
 	if err != nil || !claimed {
 		return err
 	}
@@ -145,12 +146,18 @@ func (b *binding) dispatch(ctx context.Context, item modulehost.DueTrigger) erro
 }
 
 func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, definition schedulersdk.Definition) error {
-	dispatchCtx := ctx
-	cancel := func() {}
+	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
+	cancel := func() { cancelDispatch() }
 	if definition.Policy.Timeout > 0 {
-		dispatchCtx, cancel = context.WithTimeout(ctx, definition.Policy.Timeout)
+		dispatchCtx, cancel = context.WithTimeout(dispatchCtx, definition.Policy.Timeout)
 	}
 	defer cancel()
+	leaseResult := make(chan error, 1)
+	stopRenew := make(chan struct{})
+	if run.Lease.Valid() {
+		go b.renewLease(dispatchCtx, cancelDispatch, run, b.currentLeaseTTL(), stopRenew, leaseResult)
+	}
+	defer close(stopRenew)
 	var receipt schedulersdk.DownstreamReceipt
 	var err error
 	if run.Trigger.Target.Type == "http" && strings.EqualFold(strings.TrimSpace(run.Trigger.Target.DispatchMode), "direct") {
@@ -159,8 +166,22 @@ func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 		receipt, err = b.host.Dispatcher().Dispatch(dispatchCtx, run.Trigger)
 	}
 	if err != nil {
+		select {
+		case leaseErr := <-leaseResult:
+			if leaseErr != nil {
+				return leaseErr
+			}
+		default:
+		}
 		_ = b.host.Runs().Fail(ctx, run, err, nextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
 		return err
+	}
+	select {
+	case leaseErr := <-leaseResult:
+		if leaseErr != nil {
+			return leaseErr
+		}
+	default:
 	}
 	if strings.TrimSpace(receipt.ID) == "" {
 		err = fmt.Errorf("downstream owner returned no durable receipt")
@@ -168,6 +189,43 @@ func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 		return err
 	}
 	return b.host.Runs().Accept(ctx, run, receipt)
+}
+
+func (b *binding) renewLease(ctx context.Context, cancel context.CancelFunc, run schedulersdk.Run, ttl time.Duration, stop <-chan struct{}, result chan<- error) {
+	interval := ttl / 3
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-ticker.C:
+			_, owned, err := b.host.Runs().Renew(ctx, run, ttl)
+			if err == nil && owned {
+				continue
+			}
+			if err == nil {
+				err = fmt.Errorf("Scheduler run %q lease lost", run.Trigger.RunID)
+			}
+			select {
+			case result <- err:
+			default:
+			}
+			cancel()
+			return
+		}
+	}
+}
+
+func (b *binding) currentLeaseTTL() time.Duration {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.leaseTTL
 }
 
 func nextRetry(policy schedulersdk.Policy, attempt int, now time.Time) time.Time {
@@ -192,6 +250,9 @@ func (b *binding) Runs(ctx context.Context, limit int) ([]schedulersdk.Run, erro
 func (b *binding) Start(ctx context.Context, config schedulersdk.WorkerConfig) <-chan struct{} {
 	done := make(chan struct{})
 	config = schedulersdk.NormalizeWorkerConfig(config)
+	b.mu.Lock()
+	b.leaseTTL = config.LeaseTTL
+	b.mu.Unlock()
 	if !config.Enabled {
 		close(done)
 		return done
