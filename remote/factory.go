@@ -7,6 +7,7 @@ import (
 	"time"
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
+	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	"github.com/domainry/domainry-scheduler-sdk/saashost"
 )
 
@@ -21,15 +22,19 @@ func NewFactory(transport ...saashost.Transport) Factory {
 }
 
 func (f Factory) Open(ctx context.Context, application schedulersdk.ApplicationRef) (schedulersdk.Binding, error) {
-	return f.OpenSaaS(ctx, application, f.transport)
+	return nil, fmt.Errorf("Scheduler SaaS requires Runtime host capabilities")
 }
 
-func (Factory) OpenSaaS(ctx context.Context, application schedulersdk.ApplicationRef, transport saashost.Transport) (schedulersdk.Binding, error) {
+func (f Factory) OpenSaaS(ctx context.Context, application schedulersdk.ApplicationRef, host modulehost.Host) (schedulersdk.Binding, error) {
 	if err := application.Validate(); err != nil {
 		return nil, err
 	}
+	transport := f.transport
 	if transport == nil {
 		return nil, fmt.Errorf("Scheduler SaaS transport is required")
+	}
+	if host == nil || host.Definitions() == nil || host.Dispatcher() == nil {
+		return nil, fmt.Errorf("Scheduler SaaS Runtime host is incomplete")
 	}
 	descriptor, err := transport.Descriptor(ctx, application)
 	if err != nil {
@@ -41,19 +46,29 @@ func (Factory) OpenSaaS(ctx context.Context, application schedulersdk.Applicatio
 	if descriptor.Mode != schedulersdk.DeploymentModeSaaS {
 		return nil, fmt.Errorf("Scheduler remote descriptor mode must be saas")
 	}
-	return &binding{application: application, transport: transport, descriptor: descriptor}, nil
+	return &binding{application: application, transport: transport, host: host, descriptor: descriptor}, nil
 }
 
 type binding struct {
 	application schedulersdk.ApplicationRef
 	transport   saashost.Transport
+	host        modulehost.Host
 	descriptor  schedulersdk.Descriptor
 	startOnce   sync.Once
 }
 
 func (b *binding) Descriptor() schedulersdk.Descriptor { return b.descriptor }
 func (b *binding) Reconcile(ctx context.Context) error {
-	return b.transport.Reconcile(ctx, b.application)
+	snapshot, err := b.host.Definitions().Snapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("read Runtime Scheduler definitions: %w", err)
+	}
+	for _, definition := range snapshot.Definitions {
+		if err := definition.Validate(); err != nil {
+			return err
+		}
+	}
+	return b.transport.Reconcile(ctx, b.application, snapshot)
 }
 func (b *binding) Preview(ctx context.Context, value schedulersdk.Schedule, after time.Time, count int) ([]time.Time, error) {
 	return b.transport.Preview(ctx, b.application, value, after, count)
