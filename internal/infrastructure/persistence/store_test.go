@@ -166,6 +166,16 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(first) {
 		t.Fatalf("same revision cursor=%s want=%s", got, first)
 	}
+	manual := first.Add(90 * time.Minute)
+	if err := store.Reschedule(t.Context(), definition.Key, manual, "operator correction"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM scheduler_schedule_state WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(manual) {
+		t.Fatalf("manual reschedule cursor=%s want=%s", got, manual)
+	}
 	definition.Revision = "v2"
 	changed := first.Add(2 * time.Hour)
 	if err := store.Reconcile(t.Context(), definition, changed); err != nil {

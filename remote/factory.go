@@ -92,8 +92,29 @@ func (b *binding) Tick(ctx context.Context, now time.Time, limit int) (int, erro
 func (b *binding) TriggerNow(ctx context.Context, key, reason string) (schedulersdk.Run, error) {
 	return b.transport.TriggerNow(ctx, b.application, key, reason)
 }
+func (b *binding) Reschedule(ctx context.Context, key string, nextRunAt time.Time, reason string) error {
+	return b.transport.Reschedule(ctx, b.application, key, nextRunAt, reason)
+}
 func (b *binding) Runs(ctx context.Context, limit int) ([]schedulersdk.Run, error) {
 	return b.transport.Runs(ctx, b.application, limit)
+}
+func (b *binding) Run(ctx context.Context, id string) (schedulersdk.Run, error) {
+	return b.transport.Run(ctx, b.application, id)
+}
+func (b *binding) RetryRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+	return b.transport.RetryRun(ctx, b.application, id, reason)
+}
+func (b *binding) CancelRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+	return b.transport.CancelRun(ctx, b.application, id, reason)
+}
+func (b *binding) DeadLetter(ctx context.Context, id string) (schedulersdk.DeadLetter, error) {
+	return b.transport.DeadLetter(ctx, b.application, id)
+}
+func (b *binding) ResolveDeadLetter(ctx context.Context, id, reason string) (schedulersdk.DeadLetter, error) {
+	return b.transport.ResolveDeadLetter(ctx, b.application, id, reason)
+}
+func (b *binding) RequeueDeadLetter(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+	return b.transport.RequeueDeadLetter(ctx, b.application, id, reason)
 }
 func (b *binding) Start(ctx context.Context, config schedulersdk.WorkerConfig) <-chan struct{} {
 	done := make(chan struct{})

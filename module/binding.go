@@ -142,6 +142,9 @@ func (b *binding) TriggerNow(ctx context.Context, key, reason string) (scheduler
 	run.Trigger.Metadata = metadata
 	return run, b.dispatchClaimed(ctx, run, definition)
 }
+func (b *binding) Reschedule(ctx context.Context, key string, nextRunAt time.Time, reason string) error {
+	return b.runs.Reschedule(ctx, strings.TrimSpace(key), nextRunAt.UTC(), strings.TrimSpace(reason))
+}
 
 func (b *binding) dispatch(ctx context.Context, item modulehost.DueTrigger) error {
 	run, claimed, err := b.runs.Claim(ctx, item, b.currentLeaseTTL())
@@ -251,6 +254,24 @@ func nextRetry(policy schedulersdk.Policy, attempt int, now time.Time) time.Time
 
 func (b *binding) Runs(ctx context.Context, limit int) ([]schedulersdk.Run, error) {
 	return b.runs.List(ctx, limit)
+}
+func (b *binding) Run(ctx context.Context, id string) (schedulersdk.Run, error) {
+	return b.runs.Get(ctx, id)
+}
+func (b *binding) RetryRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+	return b.runs.Retry(ctx, id, reason)
+}
+func (b *binding) CancelRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+	return b.runs.Cancel(ctx, id, reason)
+}
+func (b *binding) DeadLetter(ctx context.Context, id string) (schedulersdk.DeadLetter, error) {
+	return b.runs.DeadLetter(ctx, id)
+}
+func (b *binding) ResolveDeadLetter(ctx context.Context, id, reason string) (schedulersdk.DeadLetter, error) {
+	return b.runs.ResolveDeadLetter(ctx, id, reason)
+}
+func (b *binding) RequeueDeadLetter(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+	return b.runs.RequeueDeadLetter(ctx, id, reason)
 }
 
 func (b *binding) Start(ctx context.Context, config schedulersdk.WorkerConfig) <-chan struct{} {

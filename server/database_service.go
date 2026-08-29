@@ -135,12 +135,70 @@ func (s *DatabaseService) TriggerNow(ctx context.Context, ref schedulersdk.Appli
 	}
 	return app.binding.TriggerNow(ctx, key, reason)
 }
+func (s *DatabaseService) Reschedule(ctx context.Context, ref schedulersdk.ApplicationRef, key string, nextRunAt time.Time, reason string) error {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return err
+	}
+	return binding.Reschedule(ctx, key, nextRunAt, reason)
+}
 func (s *DatabaseService) Runs(ctx context.Context, ref schedulersdk.ApplicationRef, limit int) ([]schedulersdk.Run, error) {
 	app, err := s.application(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 	return app.binding.Runs(ctx, limit)
+}
+
+func (s *DatabaseService) binding(ctx context.Context, ref schedulersdk.ApplicationRef) (schedulersdk.Binding, error) {
+	app, err := s.application(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return app.binding, nil
+}
+
+func (s *DatabaseService) Run(ctx context.Context, ref schedulersdk.ApplicationRef, id string) (schedulersdk.Run, error) {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return binding.Run(ctx, id)
+}
+func (s *DatabaseService) RetryRun(ctx context.Context, ref schedulersdk.ApplicationRef, id, reason string) (schedulersdk.Run, error) {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return binding.RetryRun(ctx, id, reason)
+}
+func (s *DatabaseService) CancelRun(ctx context.Context, ref schedulersdk.ApplicationRef, id, reason string) (schedulersdk.Run, error) {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return binding.CancelRun(ctx, id, reason)
+}
+func (s *DatabaseService) DeadLetter(ctx context.Context, ref schedulersdk.ApplicationRef, id string) (schedulersdk.DeadLetter, error) {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	return binding.DeadLetter(ctx, id)
+}
+func (s *DatabaseService) ResolveDeadLetter(ctx context.Context, ref schedulersdk.ApplicationRef, id, reason string) (schedulersdk.DeadLetter, error) {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	return binding.ResolveDeadLetter(ctx, id, reason)
+}
+func (s *DatabaseService) RequeueDeadLetter(ctx context.Context, ref schedulersdk.ApplicationRef, id, reason string) (schedulersdk.Run, error) {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return binding.RequeueDeadLetter(ctx, id, reason)
 }
 func (s *DatabaseService) Close(ctx context.Context, ref schedulersdk.ApplicationRef) error {
 	key := strings.TrimSpace(ref.RuntimeID)

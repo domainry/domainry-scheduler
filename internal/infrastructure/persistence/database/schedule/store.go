@@ -115,6 +115,28 @@ func (s *Store) DisableMissing(ctx context.Context, active []string, revision in
 	return err
 }
 
+func (s *Store) Reschedule(ctx context.Context, key string, nextRunAt time.Time, _ string) error {
+	key = strings.TrimSpace(key)
+	if key == "" || nextRunAt.IsZero() {
+		return fmt.Errorf("Scheduler definition key and next run time are required")
+	}
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_schedule_state").
+		Set("next_run_at", formatTime(nextRunAt.UTC())).Set("updated_at", formatTime(time.Now().UTC())).
+		Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("definition_key", key))).Build()
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, update, args...)
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected != 1 {
+		return fmt.Errorf("Scheduler definition %q is not reconciled", key)
+	}
+	return nil
+}
+
 func (s *Store) Due(ctx context.Context, now time.Time, limit int) ([]modulehost.DueTrigger, error) {
 	if limit <= 0 {
 		limit = 25
@@ -340,6 +362,127 @@ func (s *Store) List(ctx context.Context, limit int) ([]schedulersdk.Run, error)
 		out = append(out, run)
 	}
 	return out, nil
+}
+
+func (s *Store) Get(ctx context.Context, id string) (schedulersdk.Run, error) {
+	return s.get(ctx, strings.TrimSpace(id))
+}
+
+func (s *Store) Retry(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+	now := time.Now().UTC()
+	predicate := ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(id)), ormbuilder.In("status", "failed", "dead_letter"))
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_runs").Set("status", "retrying").Set("next_retry_at", formatTime(now)).Set("lease_owner", nil).Set("lease_expires_at", nil).Set("updated_at", formatTime(now)).Where(predicate).Build()
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, update, args...)
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	affected, _ := result.RowsAffected()
+	if affected != 1 {
+		return schedulersdk.Run{}, fmt.Errorf("Scheduler run %q is not retryable", id)
+	}
+	resolve, resolveArgs, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_dead_letters").Set("resolved_at", formatTime(now)).Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(id)), ormbuilder.Equal("resolved_at", nil))).Build()
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	if _, err = tx.ExecContext(ctx, resolve, resolveArgs...); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	if err = s.eventWith(ctx, tx, id, "retry_scheduled", strings.TrimSpace(reason)); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return s.get(ctx, id)
+}
+
+func (s *Store) Cancel(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+	now := time.Now().UTC()
+	predicate := ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(id)), ormbuilder.In("status", "leased", "retrying"))
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_runs").Set("status", "cancelled").Set("next_retry_at", nil).Set("lease_owner", nil).Set("lease_expires_at", nil).SetExpression("fencing_token", ormbuilder.Add(ormbuilder.Column("fencing_token"), ormbuilder.Value(1))).Set("updated_at", formatTime(now)).Where(predicate).Build()
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, update, args...)
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
+	affected, _ := result.RowsAffected()
+	if affected != 1 {
+		return schedulersdk.Run{}, fmt.Errorf("Scheduler run %q is not cancellable", id)
+	}
+	if err = s.eventWith(ctx, tx, id, "cancelled", strings.TrimSpace(reason)); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return s.get(ctx, id)
+}
+
+func (s *Store) DeadLetter(ctx context.Context, runID string) (schedulersdk.DeadLetter, error) {
+	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "scheduler_dead_letters").Columns("definition_key", "reason", "failed_at", "resolved_at").Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(runID)))).Build()
+	if err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	var definition, reason, failed string
+	var resolved sql.NullString
+	if err = s.db.QueryRowContext(ctx, query, args...).Scan(&definition, &reason, &failed, &resolved); err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	status := "open"
+	if resolved.Valid && strings.TrimSpace(resolved.String) != "" {
+		status = "resolved"
+	}
+	return schedulersdk.DeadLetter{RunID: strings.TrimSpace(runID), DefinitionKey: definition, Status: status, Reason: reason, FailedAt: parseTime(failed), ResolvedAt: parseTime(resolved.String)}, nil
+}
+
+func (s *Store) ResolveDeadLetter(ctx context.Context, runID, reason string) (schedulersdk.DeadLetter, error) {
+	now := time.Now().UTC()
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_dead_letters").Set("resolved_at", formatTime(now)).Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(runID)), ormbuilder.Equal("resolved_at", nil))).Build()
+	if err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, update, args...)
+	if err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	affected, _ := result.RowsAffected()
+	if affected != 1 {
+		return schedulersdk.DeadLetter{}, fmt.Errorf("Scheduler dead letter %q is not open", runID)
+	}
+	if err = s.eventWith(ctx, tx, runID, "dead_letter_resolved", strings.TrimSpace(reason)); err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	return s.DeadLetter(ctx, runID)
+}
+
+func (s *Store) RequeueDeadLetter(ctx context.Context, runID, reason string) (schedulersdk.Run, error) {
+	if _, err := s.DeadLetter(ctx, runID); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return s.Retry(ctx, runID, reason)
 }
 
 func (s *Store) finish(ctx context.Context, run schedulersdk.Run, status, receipt, lastError string) error {

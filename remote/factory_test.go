@@ -50,8 +50,29 @@ func (*transportStub) Tick(context.Context, schedulersdk.ApplicationRef, time.Ti
 func (*transportStub) TriggerNow(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error) {
 	return schedulersdk.Run{}, nil
 }
+func (*transportStub) Reschedule(context.Context, schedulersdk.ApplicationRef, string, time.Time, string) error {
+	return nil
+}
 func (*transportStub) Runs(context.Context, schedulersdk.ApplicationRef, int) ([]schedulersdk.Run, error) {
 	return nil, nil
+}
+func (*transportStub) Run(context.Context, schedulersdk.ApplicationRef, string) (schedulersdk.Run, error) {
+	return schedulersdk.Run{}, nil
+}
+func (*transportStub) RetryRun(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error) {
+	return schedulersdk.Run{}, nil
+}
+func (*transportStub) CancelRun(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error) {
+	return schedulersdk.Run{}, nil
+}
+func (*transportStub) DeadLetter(context.Context, schedulersdk.ApplicationRef, string) (schedulersdk.DeadLetter, error) {
+	return schedulersdk.DeadLetter{}, nil
+}
+func (*transportStub) ResolveDeadLetter(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.DeadLetter, error) {
+	return schedulersdk.DeadLetter{}, nil
+}
+func (*transportStub) RequeueDeadLetter(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error) {
+	return schedulersdk.Run{}, nil
 }
 func (*transportStub) Close(context.Context, schedulersdk.ApplicationRef) error { return nil }
 

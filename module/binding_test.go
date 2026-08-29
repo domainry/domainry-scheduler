@@ -51,6 +51,25 @@ func (h *hostStub) Accept(context.Context, schedulersdk.Run, schedulersdk.Downst
 }
 func (*hostStub) Fail(context.Context, schedulersdk.Run, error, time.Time) error { return nil }
 func (*hostStub) List(context.Context, int) ([]schedulersdk.Run, error)          { return nil, nil }
+func (*hostStub) Get(context.Context, string) (schedulersdk.Run, error) {
+	return schedulersdk.Run{}, nil
+}
+func (*hostStub) Retry(context.Context, string, string) (schedulersdk.Run, error) {
+	return schedulersdk.Run{}, nil
+}
+func (*hostStub) Cancel(context.Context, string, string) (schedulersdk.Run, error) {
+	return schedulersdk.Run{}, nil
+}
+func (*hostStub) DeadLetter(context.Context, string) (schedulersdk.DeadLetter, error) {
+	return schedulersdk.DeadLetter{}, nil
+}
+func (*hostStub) ResolveDeadLetter(context.Context, string, string) (schedulersdk.DeadLetter, error) {
+	return schedulersdk.DeadLetter{}, nil
+}
+func (*hostStub) RequeueDeadLetter(context.Context, string, string) (schedulersdk.Run, error) {
+	return schedulersdk.Run{}, nil
+}
+func (*hostStub) Reschedule(context.Context, string, time.Time, string) error { return nil }
 func (h *hostStub) Dispatch(ctx context.Context, _ schedulersdk.Trigger) (schedulersdk.DownstreamReceipt, error) {
 	h.dispatched++
 	if h.dispatchFn != nil {
