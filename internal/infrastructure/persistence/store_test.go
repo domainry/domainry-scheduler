@@ -27,11 +27,15 @@ func TestDatabaseClaimRunsOnOnlyOneMachine(t *testing.T) {
 			}
 		}
 	}
-	first, err := NewStore(db, "sqlite", "", "runtime-a", "machine-a")
+	dialect, err := Renderer("sqlite", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := NewStore(db, "sqlite", "", "runtime-a", "machine-b")
+	first, err := NewStore(db, dialect, "runtime-a", "machine-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewStore(db, dialect, "runtime-a", "machine-b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +98,11 @@ func TestFailureAtMaximumAttemptAtomicallyCreatesDeadLetter(t *testing.T) {
 	if err := EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(db, "sqlite", "", "runtime-a", "machine-a")
+	dialect, err := Renderer("sqlite", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(db, dialect, "runtime-a", "machine-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +143,11 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(db, "sqlite", "", "runtime-a", "machine-a")
+	dialect, err := Renderer("sqlite", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(db, dialect, "runtime-a", "machine-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +163,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM scheduler_schedule_state WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
-	if got := parseTime(cursor); !got.Equal(first) {
+	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(first) {
 		t.Fatalf("same revision cursor=%s want=%s", got, first)
 	}
 	definition.Revision = "v2"
@@ -162,7 +174,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM scheduler_schedule_state WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
-	if got := parseTime(cursor); !got.Equal(changed) {
+	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(changed) {
 		t.Fatalf("changed revision cursor=%s want=%s", got, changed)
 	}
 }

@@ -51,6 +51,7 @@ func TestSchedulerOwnsDurableStateInsteadOfBorrowingRunStore(t *testing.T) {
 	for _, required := range []string{
 		"internal/infrastructure/persistence/schema.go",
 		"internal/infrastructure/persistence/store.go",
+		"internal/infrastructure/persistence/database/schedule/store.go",
 	} {
 		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(required))); err != nil || info.IsDir() {
 			t.Errorf("source-owned Scheduler persistence %q is missing", required)
@@ -61,7 +62,7 @@ func TestSchedulerOwnsDurableStateInsteadOfBorrowingRunStore(t *testing.T) {
 func TestSchedulerPersistenceUsesDomainryORM(t *testing.T) {
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "infrastructure", "persistence"))
-	for _, name := range []string{"schema.go", "store.go", "migration.go"} {
+	for _, name := range []string{"engine.go", "migration.go", "database/schema/migrations.go", "database/schedule/store.go"} {
 		raw, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {
 			t.Fatal(err)
@@ -74,6 +75,26 @@ func TestSchedulerPersistenceUsesDomainryORM(t *testing.T) {
 			if strings.Contains(text, rawSQL) {
 				t.Errorf("Scheduler persistence %s contains handwritten SQL %s", name, rawSQL)
 			}
+		}
+	}
+}
+
+func TestScheduleRepositoryReceivesDatabaseAndDialectPorts(t *testing.T) {
+	_, source, _, _ := runtime.Caller(0)
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "infrastructure", "persistence"))
+	raw, err := os.ReadFile(filepath.Join(root, "database", "schedule", "store.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, forbidden := range []string{"*sql.DB", "ormdialect.Parse", "newRenderer", "driver string", "schema string"} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("Scheduler repository selects database infrastructure through %q", forbidden)
+		}
+	}
+	for _, required := range []string{"modulehost.Database", "modulehost.Dialect"} {
+		if !strings.Contains(text, required) {
+			t.Errorf("Scheduler repository does not consume %s", required)
 		}
 	}
 }

@@ -4,7 +4,7 @@
 
 ## Deployment topologies
 
-- Module: inject `module.NewFactory(module.OptionsFromEnvironment())` through `runtimehost.Options.SchedulerFactory`. Runtime lends published definitions, durable run state and downstream dispatch ports.
+- Module: inject `module.NewFactory(module.OptionsFromEnvironment())` through `runtimehost.Options.SchedulerFactory`. Runtime lends its ORM database/dialect ports, shared migration ledger, published definitions and downstream dispatch ports; Scheduler owns the durable schema and repositories.
 - SaaS: inject `remote.NewHTTPFactory(httptransport.ConfigFromEnvironment())`. Runtime publishes a revisioned definition snapshot to the Scheduler SaaS endpoint.
 
 SaaS environment variables:
@@ -52,6 +52,11 @@ Definitions are configuration. A successful downstream call must return a durabl
 ```text
 admin/                    Scheduler target-editor npm package
 internal/executor/http/   private direct-HTTP dispatch adapter
+internal/infrastructure/persistence/
+  engine.go               ORM engine selection at the composition boundary
+  database/schema/        structured Scheduler-owned schema definitions
+  database/schedule/      engine-neutral schedule/run repository
+  mysql|postgres|sqlite/  database-specific ORM engines
 module/                   public in-process Module factory and binding
 remote/                   public Scheduler SaaS client binding
 server/                   public Scheduler SaaS HTTP server protocol

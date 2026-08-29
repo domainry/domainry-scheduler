@@ -1,96 +1,24 @@
 package persistence
 
 import (
-	"fmt"
-	"strings"
-
-	ormbuilder "github.com/domainry/domainry-orm/builder"
-	ormdialect "github.com/domainry/domainry-orm/dialect"
-	ormmigration "github.com/domainry/domainry-orm/migration"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	storeschema "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database/schema"
 )
 
-const SchemaVersion uint = 1
+const SchemaVersion = storeschema.SchemaVersion
 
-type Migration = ormmigration.Migration
-
-func SchemaMigrations(driver, schema string) ([]modulehost.SchemaMigration, error) {
-	r, err := newRenderer(driver, schema)
+func SchemaMigrations(driver, databaseSchema string) ([]modulehost.SchemaMigration, error) {
+	engine, err := NewEngine(driver)
 	if err != nil {
 		return nil, err
 	}
-	definitions := []struct {
-		name    string
-		columns []ormbuilder.SchemaColumn
-		primary []string
-		unique  [][]string
-	}{
-		{name: "scheduler_schedule_state", columns: []ormbuilder.SchemaColumn{
-			required("runtime_id", ormbuilder.TextKeyType(191)), required("definition_key", ormbuilder.TextKeyType(191)),
-			required("revision", ormbuilder.TextKeyType(191)), required("enabled", ormbuilder.BooleanType()),
-			required("definition_json", ormbuilder.JSONType()), required("next_run_at", ormbuilder.TextKeyType(40)),
-			optional("last_run_at", ormbuilder.TextKeyType(40)), optional("last_run_status", ormbuilder.TextKeyType(32)),
-			required("snapshot_revision", ormbuilder.BigIntType()), required("updated_at", ormbuilder.TextKeyType(40)),
-		}, primary: []string{"runtime_id", "definition_key"}},
-		{name: "scheduler_runs", columns: []ormbuilder.SchemaColumn{
-			required("runtime_id", ormbuilder.TextKeyType(191)), required("run_id", ormbuilder.TextKeyType(191)),
-			required("definition_key", ormbuilder.TextKeyType(191)), required("definition_revision", ormbuilder.TextKeyType(191)),
-			required("scheduled_for", ormbuilder.TextKeyType(40)), required("window_key", ormbuilder.TextKeyType(191)),
-			required("target_json", ormbuilder.JSONType()), optional("metadata_json", ormbuilder.JSONType()),
-			required("status", ormbuilder.TextKeyType(32)), required("attempt", ormbuilder.BigIntType()),
-			optional("lease_owner", ormbuilder.TextKeyType(191)), optional("lease_expires_at", ormbuilder.TextKeyType(40)),
-			required("fencing_token", ormbuilder.BigIntType()), optional("next_retry_at", ormbuilder.TextKeyType(40)),
-			optional("receipt_json", ormbuilder.JSONType()), optional("last_error", ormbuilder.LongTextType()),
-			required("created_at", ormbuilder.TextKeyType(40)), required("updated_at", ormbuilder.TextKeyType(40)),
-		}, primary: []string{"runtime_id", "run_id"}, unique: [][]string{{"runtime_id", "definition_key", "scheduled_for"}}},
-		{name: "scheduler_run_events", columns: []ormbuilder.SchemaColumn{
-			required("runtime_id", ormbuilder.TextKeyType(191)), required("event_id", ormbuilder.TextKeyType(191)), required("run_id", ormbuilder.TextKeyType(191)),
-			required("event_type", ormbuilder.TextKeyType(64)), optional("message", ormbuilder.LongTextType()), optional("metadata_json", ormbuilder.JSONType()), required("created_at", ormbuilder.TextKeyType(40)),
-		}, primary: []string{"runtime_id", "event_id"}},
-		{name: "scheduler_dead_letters", columns: []ormbuilder.SchemaColumn{
-			required("runtime_id", ormbuilder.TextKeyType(191)), required("run_id", ormbuilder.TextKeyType(191)), required("definition_key", ormbuilder.TextKeyType(191)),
-			required("reason", ormbuilder.LongTextType()), required("failed_at", ormbuilder.TextKeyType(40)), optional("resolved_at", ormbuilder.TextKeyType(40)),
-		}, primary: []string{"runtime_id", "run_id"}},
-	}
-	statements := make([]string, 0, len(definitions))
-	for _, definition := range definitions {
-		builder := ormbuilder.NewCreateTableBuilder(r.Renderer, definition.name).WithoutSystemColumns().Columns(definition.columns...).PrimaryKey(definition.primary...)
-		for _, columns := range definition.unique {
-			builder.Unique(columns...)
-		}
-		statement, _, err := builder.Build()
-		if err != nil {
-			return nil, fmt.Errorf("build Scheduler table %s: %w", definition.name, err)
-		}
-		statements = append(statements, statement)
-	}
-	return []modulehost.SchemaMigration{{Version: SchemaVersion, Name: "scheduler_foundation", Statements: statements}}, nil
+	return storeschema.Migrations(engine.Renderer(databaseSchema))
 }
 
-func required(name string, kind ormbuilder.ColumnType) ormbuilder.SchemaColumn {
-	return ormbuilder.DefineColumn(name, kind).NotNull()
-}
-func optional(name string, kind ormbuilder.ColumnType) ormbuilder.SchemaColumn {
-	return ormbuilder.DefineColumn(name, kind)
-}
-
-type renderer struct{ ormdialect.Renderer }
-
-func newRenderer(driver, schema string) (renderer, error) {
-	driver = strings.ToLower(strings.TrimSpace(driver))
-	if driver == "sqlite3" {
-		driver = "sqlite"
-	}
-	if driver == "postgresql" || driver == "pgx" {
-		driver = "postgres"
-	}
-	dialect, err := ormdialect.Parse(driver)
+func Renderer(driver, databaseSchema string) (modulehost.Dialect, error) {
+	engine, err := NewEngine(driver)
 	if err != nil {
-		return renderer{}, err
+		return nil, err
 	}
-	return renderer{Renderer: dialect.WithSchema(strings.TrimSpace(schema))}, nil
+	return engine.Renderer(databaseSchema), nil
 }
-
-func (r renderer) column(name string) string       { return r.Identifier(name) }
-func (r renderer) table(name string) string        { return r.Table(name) }
-func (r renderer) placeholder(position int) string { return r.Placeholder(position) }

@@ -10,6 +10,7 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence"
 	schedulermodule "github.com/domainry/domainry-scheduler/module"
 )
 
@@ -32,6 +33,7 @@ type DatabaseServiceOptions struct {
 // scope while all bindings share the Scheduler-owned service database.
 type DatabaseService struct {
 	options      DatabaseServiceOptions
+	dialect      modulehost.Dialect
 	mu           sync.Mutex
 	applications map[string]*databaseApplication
 }
@@ -47,6 +49,7 @@ type databaseApplication struct {
 
 type databaseApplicationHost struct {
 	service     DatabaseServiceOptions
+	dialect     modulehost.Dialect
 	application *databaseApplication
 	downstream  DownstreamHost
 }
@@ -55,7 +58,11 @@ func NewDatabaseService(options DatabaseServiceOptions) (*DatabaseService, error
 	if options.Database == nil || strings.TrimSpace(options.Driver) == "" || strings.TrimSpace(options.WorkerID) == "" || options.Downstreams == nil {
 		return nil, fmt.Errorf("Scheduler SaaS database service is incomplete")
 	}
-	return &DatabaseService{options: options, applications: map[string]*databaseApplication{}}, nil
+	dialect, err := schedulerstore.Renderer(options.Driver, options.Schema)
+	if err != nil {
+		return nil, fmt.Errorf("Scheduler SaaS database dialect: %w", err)
+	}
+	return &DatabaseService{options: options, dialect: dialect, applications: map[string]*databaseApplication{}}, nil
 }
 
 func (s *DatabaseService) application(ctx context.Context, ref schedulersdk.ApplicationRef) (*databaseApplication, error) {
@@ -76,7 +83,7 @@ func (s *DatabaseService) application(ctx context.Context, ref schedulersdk.Appl
 		return nil, fmt.Errorf("Scheduler SaaS downstream host is unavailable for %s", key)
 	}
 	state := &databaseApplication{}
-	host := &databaseApplicationHost{service: s.options, application: state, downstream: downstream}
+	host := &databaseApplicationHost{service: s.options, dialect: s.dialect, application: state, downstream: downstream}
 	state.host = host
 	binding, err := schedulermodule.NewFactory(schedulermodule.Options{}).OpenSaaSApplication(ctx, ref, host)
 	if err != nil {
@@ -155,10 +162,11 @@ func (h *databaseApplicationHost) Dispatcher() modulehost.Dispatcher          { 
 func (h *databaseApplicationHost) HTTPConnections() modulehost.HTTPConnectionProvider {
 	return h.downstream
 }
-func (h *databaseApplicationHost) Database() *sql.DB { return h.service.Database }
-func (h *databaseApplicationHost) Driver() string    { return h.service.Driver }
-func (h *databaseApplicationHost) Schema() string    { return h.service.Schema }
-func (h *databaseApplicationHost) WorkerID() string  { return h.service.WorkerID }
+func (h *databaseApplicationHost) Database() modulehost.Database { return h.service.Database }
+func (h *databaseApplicationHost) Dialect() modulehost.Dialect   { return h.dialect }
+func (h *databaseApplicationHost) Driver() string                { return h.service.Driver }
+func (h *databaseApplicationHost) Schema() string                { return h.service.Schema }
+func (h *databaseApplicationHost) WorkerID() string              { return h.service.WorkerID }
 func (h *databaseApplicationHost) Snapshot(context.Context) (schedulersdk.DefinitionSnapshot, error) {
 	h.application.mu.RLock()
 	defer h.application.mu.RUnlock()
