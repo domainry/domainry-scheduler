@@ -7,8 +7,47 @@ import (
 	"strings"
 	"time"
 
+	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/robfig/cron/v3"
 )
+
+func Data(value schedulersdk.Schedule) map[string]any {
+	data := map[string]any{"schedule_type": value.Type, "schedule_expression": value.Expression, "timezone": value.Timezone}
+	if value.IntervalSeconds > 0 {
+		data["interval_seconds"] = value.IntervalSeconds
+	}
+	return data
+}
+
+func NextSchedule(value schedulersdk.Schedule, now time.Time) time.Time {
+	return Next(Data(value), now)
+}
+
+func Validate(value schedulersdk.Schedule) error {
+	data := Data(value)
+	switch Type(data) {
+	case "interval":
+		if IntervalSeconds(data) <= 0 {
+			return fmt.Errorf("scheduler interval must be positive")
+		}
+	case "cron":
+		if _, ok := Cron(data); !ok {
+			return fmt.Errorf("scheduler cron expression is invalid")
+		}
+	case "daily_at", "weekly_at", "monthly_at":
+		if _, _, _, ok := ParseClock(value.Expression); !ok {
+			return fmt.Errorf("scheduler wall clock is invalid")
+		}
+	default:
+		return fmt.Errorf("unsupported scheduler type %q", value.Type)
+	}
+	if value.Timezone != "" {
+		if _, err := time.LoadLocation(value.Timezone); err != nil {
+			return fmt.Errorf("scheduler timezone is invalid: %w", err)
+		}
+	}
+	return nil
+}
 
 func WindowSuffix(data map[string]any, now time.Time) string {
 	localNow := now.In(location(data))
