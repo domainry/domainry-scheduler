@@ -29,6 +29,16 @@ func TestRepositoryRootContainsOnlyReviewedPackages(t *testing.T) {
 	}
 }
 
+func TestModuleUsesTaggedDependencies(t *testing.T) {
+	content, err := os.ReadFile("../../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), "replace ") || strings.Contains(string(content), "../domainry-") {
+		t.Fatal("Scheduler must consume released module tags, not local directory replacements")
+	}
+}
+
 func TestSchedulerOwnsDurableStateInsteadOfBorrowingRunStore(t *testing.T) {
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
@@ -55,7 +65,7 @@ func TestSchedulerOwnsDurableStateInsteadOfBorrowingRunStore(t *testing.T) {
 	}
 	for _, required := range []string{
 		"internal/infrastructure/persistence/schema.go",
-		"internal/infrastructure/persistence/store.go",
+		"internal/infrastructure/persistence/database/store.go",
 		"internal/infrastructure/persistence/database/schedule/store.go",
 	} {
 		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(required))); err != nil || info.IsDir() {

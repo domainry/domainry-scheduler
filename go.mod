@@ -3,9 +3,9 @@ module github.com/domainry/domainry-scheduler
 go 1.26.0
 
 require (
-	github.com/domainry/domainry-foundation v0.1.0-dev.5
-	github.com/domainry/domainry-orm v0.1.21
-	github.com/domainry/domainry-scheduler-sdk v0.0.0-00010101000000-000000000000
+	github.com/domainry/domainry-foundation v0.1.0-dev.6
+	github.com/domainry/domainry-orm v0.1.25
+	github.com/domainry/domainry-scheduler-sdk v0.1.0
 	modernc.org/sqlite v1.53.0
 )
 
@@ -27,9 +27,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/domainry/domainry-scheduler-sdk => ../domainry-scheduler-sdk
-
-replace github.com/domainry/domainry-orm => ../domainry-orm
-
-replace github.com/domainry/domainry-foundation => ../domainry-foundation

@@ -7,7 +7,7 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
-	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence"
+	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
 )
 
 type Options struct{}
