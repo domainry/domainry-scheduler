@@ -4,8 +4,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/domainry/domainry-foundation v0.1.0-dev.6 h1:V5s/3IRGb0PFBZgqlX8Rb3vKModUATIGDgzC9rEqF9A=
 github.com/domainry/domainry-foundation v0.1.0-dev.6/go.mod h1:+BYiJIIQbc1Z9Xfmo7EQCkfcB8uNV6Fcd+RHFigAW4o=
-github.com/domainry/domainry-orm v0.1.25 h1:Q/FRU/3sbJU6G2lnZ1laufD+7k2hwDtHzakQd4h6oq0=
-github.com/domainry/domainry-orm v0.1.25/go.mod h1:NKMojLuridkYCS4i5L7BO7LMTMsf/uOkWQ9OQ+9Vdn4=
+github.com/domainry/domainry-orm v0.1.27 h1:bXpjvroFrwaj8tgI2zKmXeX4RCaSqCzfRs1AAkpCeHE=
+github.com/domainry/domainry-orm v0.1.27/go.mod h1:NKMojLuridkYCS4i5L7BO7LMTMsf/uOkWQ9OQ+9Vdn4=
 github.com/domainry/domainry-scheduler-sdk v0.1.0 h1:CppQNeo/4Tfp6FY+ofuZ1tTqgZfp/8ZkhdSKN8XVR8c=
 github.com/domainry/domainry-scheduler-sdk v0.1.0/go.mod h1:8Ga2fJg4s9zV+UtzP7xkD3QPgTfLTdsA5Ml0xmoJbQM=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
