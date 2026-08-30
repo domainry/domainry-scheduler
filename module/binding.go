@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/domainry/domainry-foundation/worker"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	"github.com/domainry/domainry-scheduler-sdk/schedule"
@@ -161,36 +162,36 @@ func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 		dispatchCtx, cancel = context.WithTimeout(dispatchCtx, definition.Policy.Timeout)
 	}
 	defer cancel()
-	leaseResult := make(chan error, 1)
-	stopRenew := make(chan struct{})
+	workCtx := dispatchCtx
+	stopHeartbeat := func() error { return nil }
 	if run.Lease.Valid() {
-		go b.renewLease(dispatchCtx, cancelDispatch, run, b.currentLeaseTTL(), stopRenew, leaseResult)
+		ttl := b.currentLeaseTTL()
+		interval := ttl / 3
+		workCtx, stopHeartbeat = worker.WithHeartbeat(dispatchCtx, interval, func(heartbeatCtx context.Context) error {
+			_, owned, err := b.runs.Renew(heartbeatCtx, run, ttl)
+			if err != nil {
+				return err
+			}
+			if !owned {
+				return fmt.Errorf("Scheduler run %q lease lost", run.Trigger.RunID)
+			}
+			return nil
+		})
 	}
-	defer close(stopRenew)
 	var receipt schedulersdk.DownstreamReceipt
 	var err error
 	if run.Trigger.Target.Type == "http" && strings.EqualFold(strings.TrimSpace(run.Trigger.Target.DispatchMode), "direct") {
-		receipt, err = httpexecutor.New(b.host.HTTPConnections(), nil).Dispatch(dispatchCtx, run.Trigger)
+		receipt, err = httpexecutor.New(b.host.HTTPConnections(), nil).Dispatch(workCtx, run.Trigger)
 	} else {
-		receipt, err = b.host.Dispatcher().Dispatch(dispatchCtx, run.Trigger)
+		receipt, err = b.host.Dispatcher().Dispatch(workCtx, run.Trigger)
+	}
+	leaseErr := stopHeartbeat()
+	if leaseErr != nil {
+		return leaseErr
 	}
 	if err != nil {
-		select {
-		case leaseErr := <-leaseResult:
-			if leaseErr != nil {
-				return leaseErr
-			}
-		default:
-		}
 		_ = b.runs.Fail(ctx, run, err, nextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
 		return err
-	}
-	select {
-	case leaseErr := <-leaseResult:
-		if leaseErr != nil {
-			return leaseErr
-		}
-	default:
 	}
 	if strings.TrimSpace(receipt.ID) == "" {
 		err = fmt.Errorf("downstream owner returned no durable receipt")
@@ -200,37 +201,6 @@ func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 	return b.runs.Accept(ctx, run, receipt)
 }
 
-func (b *binding) renewLease(ctx context.Context, cancel context.CancelFunc, run schedulersdk.Run, ttl time.Duration, stop <-chan struct{}, result chan<- error) {
-	interval := ttl / 3
-	if interval <= 0 {
-		interval = time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-stop:
-			return
-		case <-ticker.C:
-			_, owned, err := b.runs.Renew(ctx, run, ttl)
-			if err == nil && owned {
-				continue
-			}
-			if err == nil {
-				err = fmt.Errorf("Scheduler run %q lease lost", run.Trigger.RunID)
-			}
-			select {
-			case result <- err:
-			default:
-			}
-			cancel()
-			return
-		}
-	}
-}
-
 func (b *binding) currentLeaseTTL() time.Duration {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -238,18 +208,12 @@ func (b *binding) currentLeaseTTL() time.Duration {
 }
 
 func nextRetry(policy schedulersdk.Policy, attempt int, now time.Time) time.Time {
-	delay := policy.RetryInitial
-	if delay <= 0 {
-		delay = 30 * time.Second
+	baseDelay := policy.RetryInitial
+	if baseDelay <= 0 {
+		baseDelay = 30 * time.Second
 	}
-	for index := 1; index < attempt; index++ {
-		delay *= 2
-		if policy.RetryMax > 0 && delay >= policy.RetryMax {
-			delay = policy.RetryMax
-			break
-		}
-	}
-	return now.Add(delay)
+	retry := worker.RetryPolicy{BaseDelay: baseDelay, MaxDelay: policy.RetryMax, Backoff: worker.BackoffExponential}
+	return now.Add(retry.Delay(attempt, nil))
 }
 
 func (b *binding) Runs(ctx context.Context, limit int) ([]schedulersdk.Run, error) {
@@ -289,19 +253,20 @@ func (b *binding) Start(ctx context.Context, config schedulersdk.WorkerConfig) <
 		started = true
 		go func() {
 			defer close(done)
-			_ = b.Reconcile(ctx)
-			ticker := time.NewTicker(config.PollInterval)
-			defer ticker.Stop()
-			for {
+			runCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			go func() {
 				select {
-				case <-ctx.Done():
-					return
 				case <-b.ctx.Done():
-					return
-				case now := <-ticker.C:
-					_, _ = b.Tick(ctx, now.UTC(), config.BatchSize)
+					cancel()
+				case <-runCtx.Done():
 				}
-			}
+			}()
+			_ = b.Reconcile(runCtx)
+			loopDone := worker.StartNamedLoop(runCtx, "scheduler", config.PollInterval, func() {
+				_, _ = b.Tick(runCtx, time.Now().UTC(), config.BatchSize)
+			})
+			<-loopDone
 		}()
 	})
 	if !started {
