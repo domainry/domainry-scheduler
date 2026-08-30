@@ -103,3 +103,31 @@ func TestScheduleRepositoryReceivesDatabaseAndDialectPorts(t *testing.T) {
 		}
 	}
 }
+
+func TestSchedulerDatabaseChoiceIsConfinedToEngineFactoryAndProfiles(t *testing.T) {
+	_, source, _, _ := runtime.Caller(0)
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), ".."))
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		normalized := filepath.ToSlash(path)
+		if filepath.Base(path) == "engine.go" || strings.Contains(normalized, "/persistence/sqlite/") || strings.Contains(normalized, "/persistence/mysql/") || strings.Contains(normalized, "/persistence/postgres/") {
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		text := strings.ToLower(string(content))
+		for _, database := range []string{"sqlite", "sqlite3", "mysql", "postgres", "postgresql", "pgx"} {
+			if strings.Contains(text, database) {
+				t.Errorf("Scheduler database %q escaped engine/profile boundary: %s", database, path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
