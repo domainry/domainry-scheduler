@@ -82,7 +82,8 @@ func openHosted(ctx context.Context, application schedulersdk.ApplicationRef, ho
 		return nil, err
 	}
 	ownerCtx, cancel := context.WithCancel(ctx)
-	return newBinding(ownerCtx, cancel, application, host, runs, mode), nil
+	definitions := schedulerstore.NewDefinitionStore(host.Database(), host.Dialect())
+	return newBinding(ownerCtx, cancel, application, host, runs, definitions, mode), nil
 }
 
 var _ schedulersdk.Factory = (*Factory)(nil)

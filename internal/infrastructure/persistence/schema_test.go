@@ -15,13 +15,18 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(migrations) != 1 || len(migrations[0].Statements) != 4 {
+			if len(migrations) != 2 || len(migrations[0].Statements) != 4 || len(migrations[1].Statements) != 1 {
 				t.Fatalf("unexpected migration inventory: %#v", migrations)
 			}
-			for _, statement := range migrations[0].Statements {
-				if !strings.Contains(strings.ToLower(statement), "create table") {
-					t.Fatalf("expected ORM-rendered table statement, got %q", statement)
+			for _, migration := range migrations {
+				for _, statement := range migration.Statements {
+					if !strings.Contains(strings.ToLower(statement), "create table") {
+						t.Fatalf("expected ORM-rendered table statement, got %q", statement)
+					}
 				}
+			}
+			if !strings.Contains(migrations[1].Statements[0], "scheduler_definitions") {
+				t.Fatalf("Scheduler definition table is not source-owned: %q", migrations[1].Statements[0])
 			}
 		})
 	}

@@ -84,8 +84,15 @@ func TestStandaloneSchemaMigrationIsIdempotent(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM "_schema_migrations" WHERE "dirty" = FALSE`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
+	if count != 2 {
 		t.Fatalf("applied migrations=%d", count)
+	}
+	var definitions int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_definitions'`).Scan(&definitions); err != nil {
+		t.Fatal(err)
+	}
+	if definitions != 1 {
+		t.Fatalf("scheduler definition tables=%d", definitions)
 	}
 }
 

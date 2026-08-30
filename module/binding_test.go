@@ -7,6 +7,7 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulerrepository "github.com/domainry/domainry-scheduler-sdk/repository"
 )
 
 type hostStub struct {
@@ -18,6 +19,15 @@ type hostStub struct {
 	renewed    int
 	loseLease  bool
 	dispatchFn func(context.Context) (schedulersdk.DownstreamReceipt, error)
+	snapshot   schedulerrepository.DefinitionSnapshot
+}
+
+func (h *hostStub) SyncDefinitions(_ context.Context, snapshot schedulerrepository.DefinitionSnapshot) error {
+	h.snapshot = snapshot
+	return nil
+}
+func (h *hostStub) DefinitionSnapshot(context.Context) (schedulerrepository.DefinitionSnapshot, error) {
+	return h.snapshot, nil
 }
 
 func (h *hostStub) Definitions() modulehost.DefinitionProvider         { return h }
@@ -87,7 +97,7 @@ func TestDispatchCancelsWhenDatabaseLeaseIsLost(t *testing.T) {
 		return schedulersdk.DownstreamReceipt{}, ctx.Err()
 	}
 	ownerCtx, cancel := context.WithCancel(t.Context())
-	apiBinding := newBinding(ownerCtx, cancel, schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host, host, schedulersdk.DeploymentModeModule)
+	apiBinding := newBinding(ownerCtx, cancel, schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host, host, host, schedulersdk.DeploymentModeModule)
 	concrete := apiBinding
 	concrete.mu.Lock()
 	concrete.leaseTTL = 15 * time.Millisecond
@@ -106,7 +116,7 @@ func TestModuleOwnsClockButRoutesRuntimeCallbackToHostDispatcher(t *testing.T) {
 	definition := schedulersdk.Definition{Key: "partner_sync", Name: "Partner sync", Status: "enabled", Revision: "v1", Schedule: schedulersdk.Schedule{Type: "interval", IntervalSeconds: 60}, Target: schedulersdk.TargetRef{Type: "http", ConnectionKey: "partner", Operation: "sync", DispatchMode: "runtime_callback"}}
 	host := &hostStub{definition: definition, due: []modulehost.DueTrigger{{Definition: definition, ScheduledFor: now}}}
 	ownerCtx, cancel := context.WithCancel(t.Context())
-	binding := newBinding(ownerCtx, cancel, schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host, host, schedulersdk.DeploymentModeModule)
+	binding := newBinding(ownerCtx, cancel, schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host, host, host, schedulersdk.DeploymentModeModule)
 	if err := binding.Reconcile(t.Context()); err != nil {
 		t.Fatal(err)
 	}

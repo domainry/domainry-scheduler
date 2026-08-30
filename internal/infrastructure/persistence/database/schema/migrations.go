@@ -8,7 +8,7 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
 
-const SchemaVersion uint = 1
+const SchemaVersion uint = 2
 
 type Migration = ormmigration.Migration
 
@@ -58,7 +58,34 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 		}
 		statements = append(statements, statement)
 	}
-	return []modulehost.SchemaMigration{{Version: SchemaVersion, Name: "scheduler_foundation", Statements: statements}}, nil
+	definitionStatement, _, err := definitionTable(r).Build()
+	if err != nil {
+		return nil, fmt.Errorf("build Scheduler definition table: %w", err)
+	}
+	return []modulehost.SchemaMigration{
+		{Version: 1, Name: "scheduler_foundation", Statements: statements},
+		{Version: 2, Name: "scheduler_definition_ownership", Statements: []string{definitionStatement}},
+	}, nil
+}
+
+// definitionTable is the canonical Scheduler-authored definition projection.
+// The host supplies the database, dialect, lock, transaction boundary and
+// migration ledger, but must not declare this module-owned table itself.
+func definitionTable(r modulehost.Dialect) *ormbuilder.CreateTableBuilder {
+	return ormbuilder.NewCreateTableBuilder(r, "scheduler_definitions").WithoutSystemColumns().IfNotExists().Columns(
+		required("id", ormbuilder.TextKeyType(255)),
+		required("resource_key", ormbuilder.TextKeyType(255)),
+		required("object_key", ormbuilder.TextKeyType(255)),
+		required("name", ormbuilder.TextType()),
+		required("payload_json", ormbuilder.LongTextType()),
+		required("schema_version", ormbuilder.TextKeyType(255)),
+		required("schema_hash", ormbuilder.TextKeyType(255)),
+		required("source_kind", ormbuilder.TextKeyType(255)),
+		required("source_id", ormbuilder.TextKeyType(255)),
+		optional("disabled_at", ormbuilder.TextKeyType(255)),
+		required("created_at", ormbuilder.TextKeyType(255)),
+		required("updated_at", ormbuilder.TextKeyType(255)),
+	).PrimaryKey("id").Unique("resource_key")
 }
 
 func required(name string, kind ormbuilder.ColumnType) ormbuilder.SchemaColumn {

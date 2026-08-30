@@ -12,26 +12,28 @@ import (
 	"github.com/domainry/domainry-foundation/worker"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulerrepository "github.com/domainry/domainry-scheduler-sdk/repository"
 	"github.com/domainry/domainry-scheduler-sdk/schedule"
 	httpexecutor "github.com/domainry/domainry-scheduler/internal/executor/http"
 )
 
 type binding struct {
-	application schedulersdk.ApplicationRef
-	host        modulehost.Host
-	runs        modulehost.RunStore
-	mode        schedulersdk.DeploymentMode
-	ctx         context.Context
-	cancel      context.CancelFunc
-	mu          sync.RWMutex
-	definitions map[string]schedulersdk.Definition
-	leaseTTL    time.Duration
-	startOnce   sync.Once
-	closeOnce   sync.Once
+	application          schedulersdk.ApplicationRef
+	host                 modulehost.Host
+	runs                 modulehost.RunStore
+	definitionRepository schedulerrepository.DefinitionRepository
+	mode                 schedulersdk.DeploymentMode
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	mu                   sync.RWMutex
+	definitions          map[string]schedulersdk.Definition
+	leaseTTL             time.Duration
+	startOnce            sync.Once
+	closeOnce            sync.Once
 }
 
-func newBinding(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, runs modulehost.RunStore, mode schedulersdk.DeploymentMode) *binding {
-	return &binding{application: application, host: host, runs: runs, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute}
+func newBinding(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, runs modulehost.RunStore, definitions schedulerrepository.DefinitionRepository, mode schedulersdk.DeploymentMode) *binding {
+	return &binding{application: application, host: host, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute}
 }
 
 func (b *binding) Descriptor() schedulersdk.Descriptor {
@@ -43,10 +45,23 @@ func (b *binding) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read Scheduler definitions: %w", err)
 	}
+	if b.definitionRepository == nil {
+		return fmt.Errorf("Scheduler definition repository is unavailable")
+	}
+	if err := b.definitionRepository.SyncDefinitions(ctx, schedulerrepository.DefinitionSnapshot{
+		Revision: snapshot.Revision, SchemaVersion: fmt.Sprint(snapshot.Revision), SourceKind: "runtime_host", SourceID: b.application.RuntimeID, Definitions: snapshot.Definitions,
+	}); err != nil {
+		return fmt.Errorf("persist Scheduler definitions: %w", err)
+	}
+	persisted, err := b.definitionRepository.DefinitionSnapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("load Scheduler definitions: %w", err)
+	}
+	persisted.Revision = snapshot.Revision
 	now := time.Now().UTC()
-	next := make(map[string]schedulersdk.Definition, len(snapshot.Definitions))
-	active := make([]string, 0, len(snapshot.Definitions))
-	for _, definition := range snapshot.Definitions {
+	next := make(map[string]schedulersdk.Definition, len(persisted.Definitions))
+	active := make([]string, 0, len(persisted.Definitions))
+	for _, definition := range persisted.Definitions {
 		definition = definition.Normalize()
 		if err := definition.Validate(); err != nil {
 			return err
@@ -67,7 +82,7 @@ func (b *binding) Reconcile(ctx context.Context) error {
 		}
 	}
 	sort.Strings(active)
-	if err := b.runs.DisableMissing(ctx, active, snapshot.Revision); err != nil {
+	if err := b.runs.DisableMissing(ctx, active, persisted.Revision); err != nil {
 		return fmt.Errorf("disable removed Scheduler definitions: %w", err)
 	}
 	b.mu.Lock()
@@ -75,6 +90,12 @@ func (b *binding) Reconcile(ctx context.Context) error {
 	b.mu.Unlock()
 	return nil
 }
+
+func (b *binding) DefinitionRepository() schedulerrepository.DefinitionRepository {
+	return b.definitionRepository
+}
+
+var _ schedulerrepository.Binding = (*binding)(nil)
 
 func (*binding) Preview(ctx context.Context, value schedulersdk.Schedule, after time.Time, count int) ([]time.Time, error) {
 	if err := ctx.Err(); err != nil {
