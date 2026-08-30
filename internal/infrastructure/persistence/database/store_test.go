@@ -88,7 +88,7 @@ func TestStandaloneSchemaMigrationIsIdempotent(t *testing.T) {
 		t.Fatalf("applied migrations=%d", count)
 	}
 	var definitions int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_definitions'`).Scan(&definitions); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_scheduler_definitions'`).Scan(&definitions); err != nil {
 		t.Fatal(err)
 	}
 	if definitions != 1 {
@@ -126,14 +126,14 @@ func TestFailureAtMaximumAttemptAtomicallyCreatesDeadLetter(t *testing.T) {
 		t.Fatal(err)
 	}
 	var status, reason string
-	if err := db.QueryRowContext(t.Context(), `SELECT status, last_error FROM scheduler_runs WHERE runtime_id = ? AND run_id = ?`, "runtime-a", run.Trigger.RunID).Scan(&status, &reason); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT status, last_error FROM _scheduler_runs WHERE runtime_id = ? AND run_id = ?`, "runtime-a", run.Trigger.RunID).Scan(&status, &reason); err != nil {
 		t.Fatal(err)
 	}
 	var deadLetters, events int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM scheduler_dead_letters WHERE runtime_id = ? AND run_id = ?`, "runtime-a", run.Trigger.RunID).Scan(&deadLetters); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_dead_letters WHERE runtime_id = ? AND run_id = ?`, "runtime-a", run.Trigger.RunID).Scan(&deadLetters); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM scheduler_run_events WHERE runtime_id = ? AND run_id = ? AND event_type = 'dead_lettered'`, "runtime-a", run.Trigger.RunID).Scan(&events); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_run_events WHERE runtime_id = ? AND run_id = ? AND event_type = 'dead_lettered'`, "runtime-a", run.Trigger.RunID).Scan(&events); err != nil {
 		t.Fatal(err)
 	}
 	if status != "dead_letter" || reason == "" || deadLetters != 1 || events != 1 {
@@ -167,7 +167,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cursor string
-	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM scheduler_schedule_state WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_definition_states WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(first) {
@@ -177,7 +177,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := store.Reschedule(t.Context(), definition.Key, manual, "operator correction"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM scheduler_schedule_state WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_definition_states WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(manual) {
@@ -188,7 +188,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := store.Reconcile(t.Context(), definition, changed); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM scheduler_schedule_state WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_definition_states WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(changed) {

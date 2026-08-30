@@ -49,7 +49,7 @@ func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next t
 	predicate := s.definitionIdentity(d.Key)
 	// A revision change is the only definition reconciliation allowed to move
 	// an existing durable cursor. Same-revision restarts preserve next_run_at.
-	changed, changedArgs, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_schedule_state").
+	changed, changedArgs, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").
 		Set("revision", d.Revision).Set("enabled", true).Set("definition_json", string(raw)).Set("next_run_at", formatTime(next)).Set("updated_at", now).
 		Where(ormbuilder.And(predicate, ormbuilder.NotEqual("revision", d.Revision))).Build()
 	if err != nil {
@@ -63,7 +63,7 @@ func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next t
 	if affected > 0 {
 		return nil
 	}
-	stable, stableArgs, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_schedule_state").
+	stable, stableArgs, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").
 		Set("enabled", true).Set("definition_json", string(raw)).Set("updated_at", now).Where(predicate).Build()
 	if err != nil {
 		return err
@@ -76,7 +76,7 @@ func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next t
 	if affected > 0 {
 		return nil
 	}
-	insert, insertArgs, err := ormbuilder.NewInsertBuilder(s.dialect, "scheduler_schedule_state").Columns("runtime_id", "definition_key", "revision", "enabled", "definition_json", "next_run_at", "snapshot_revision", "updated_at").Values(s.runtimeID, d.Key, d.Revision, true, string(raw), formatTime(next), int64(0), now).Build()
+	insert, insertArgs, err := ormbuilder.NewInsertBuilder(s.dialect, "_scheduler_definition_states").Columns("runtime_id", "definition_key", "revision", "enabled", "definition_json", "next_run_at", "snapshot_revision", "updated_at").Values(s.runtimeID, d.Key, d.Revision, true, string(raw), formatTime(next), int64(0), now).Build()
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next t
 }
 
 func (s *Store) DisableMissing(ctx context.Context, active []string, revision int64) error {
-	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_schedule_state").Set("enabled", false).Set("snapshot_revision", revision).Where(ormbuilder.Equal("runtime_id", s.runtimeID)).Build()
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("enabled", false).Set("snapshot_revision", revision).Where(ormbuilder.Equal("runtime_id", s.runtimeID)).Build()
 	if err != nil {
 		return err
 	}
@@ -107,7 +107,7 @@ func (s *Store) DisableMissing(ctx context.Context, active []string, revision in
 	for i, key := range active {
 		values[i] = key
 	}
-	update, args, err = ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_schedule_state").Set("enabled", true).Set("snapshot_revision", revision).Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.In("definition_key", values...))).Build()
+	update, args, err = ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("enabled", true).Set("snapshot_revision", revision).Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.In("definition_key", values...))).Build()
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func (s *Store) Reschedule(ctx context.Context, key string, nextRunAt time.Time,
 	if key == "" || nextRunAt.IsZero() {
 		return fmt.Errorf("Scheduler definition key and next run time are required")
 	}
-	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_schedule_state").
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").
 		Set("next_run_at", formatTime(nextRunAt.UTC())).Set("updated_at", formatTime(time.Now().UTC())).
 		Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("definition_key", key))).Build()
 	if err != nil {
@@ -142,7 +142,7 @@ func (s *Store) Due(ctx context.Context, now time.Time, limit int) ([]modulehost
 		limit = 25
 	}
 	at := formatTime(now)
-	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "scheduler_schedule_state").Columns("definition_json", "next_run_at").Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("enabled", true), ormbuilder.LessThanOrEqual("next_run_at", at))).OrderBy(ormbuilder.Ascending("next_run_at")).Limit(limit).Build()
+	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "_scheduler_definition_states").Columns("definition_json", "next_run_at").Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("enabled", true), ormbuilder.LessThanOrEqual("next_run_at", at))).OrderBy(ormbuilder.Ascending("next_run_at")).Limit(limit).Build()
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +158,7 @@ func (s *Store) Due(ctx context.Context, now time.Time, limit int) ([]modulehost
 	if remaining <= 0 {
 		return result, nil
 	}
-	retryQuery, retryArgs, err := ormbuilder.NewSelectBuilder(s.dialect, "scheduler_runs").Columns("definition_key", "scheduled_for").Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("status", "retrying"), ormbuilder.LessThanOrEqual("next_retry_at", at))).OrderBy(ormbuilder.Ascending("next_retry_at")).Limit(remaining).Build()
+	retryQuery, retryArgs, err := ormbuilder.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("definition_key", "scheduled_for").Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("status", "retrying"), ormbuilder.LessThanOrEqual("next_retry_at", at))).OrderBy(ormbuilder.Ascending("next_retry_at")).Limit(remaining).Build()
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 	now := time.Now().UTC()
 	id := runID(s.runtimeID, due.Definition.Key, due.ScheduledFor)
 	target, _ := json.Marshal(due.Definition.Target)
-	insert, args, err := ormbuilder.NewInsertBuilder(s.dialect, "scheduler_runs").Columns("runtime_id", "run_id", "definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "created_at", "updated_at").Values(s.runtimeID, id, due.Definition.Key, due.Definition.Revision, formatTime(due.ScheduledFor), due.ScheduledFor.UTC().Format(time.RFC3339), string(target), "leased", 1, s.workerID, formatTime(now.Add(ttl)), int64(1), formatTime(now), formatTime(now)).Build()
+	insert, args, err := ormbuilder.NewInsertBuilder(s.dialect, "_scheduler_runs").Columns("runtime_id", "run_id", "definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "created_at", "updated_at").Values(s.runtimeID, id, due.Definition.Key, due.Definition.Revision, formatTime(due.ScheduledFor), due.ScheduledFor.UTC().Format(time.RFC3339), string(target), "leased", 1, s.workerID, formatTime(now.Add(ttl)), int64(1), formatTime(now), formatTime(now)).Build()
 	if err != nil {
 		return schedulersdk.Run{}, false, err
 	}
@@ -238,7 +238,7 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 
 func (s *Store) takeExpired(ctx context.Context, id string, ttl time.Duration, now time.Time) (schedulersdk.Run, bool, error) {
 	predicate := ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", id), ormbuilder.Or(ormbuilder.And(ormbuilder.Equal("status", "leased"), ormbuilder.LessThanOrEqual("lease_expires_at", formatTime(now))), ormbuilder.And(ormbuilder.Equal("status", "retrying"), ormbuilder.LessThanOrEqual("next_retry_at", formatTime(now)))))
-	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_runs").Set("status", "leased").Set("lease_owner", s.workerID).Set("lease_expires_at", formatTime(now.Add(ttl))).SetExpression("fencing_token", ormbuilder.Add(ormbuilder.Column("fencing_token"), ormbuilder.Value(1))).SetExpression("attempt", ormbuilder.Add(ormbuilder.Column("attempt"), ormbuilder.Value(1))).Set("updated_at", formatTime(now)).Where(predicate).Build()
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_runs").Set("status", "leased").Set("lease_owner", s.workerID).Set("lease_expires_at", formatTime(now.Add(ttl))).SetExpression("fencing_token", ormbuilder.Add(ormbuilder.Column("fencing_token"), ormbuilder.Value(1))).SetExpression("attempt", ormbuilder.Add(ormbuilder.Column("attempt"), ormbuilder.Value(1))).Set("updated_at", formatTime(now)).Where(predicate).Build()
 	if err != nil {
 		return schedulersdk.Run{}, false, err
 	}
@@ -257,7 +257,7 @@ func (s *Store) takeExpired(ctx context.Context, id string, ttl time.Duration, n
 func (s *Store) Renew(ctx context.Context, run schedulersdk.Run, ttl time.Duration) (schedulersdk.Run, bool, error) {
 	now := time.Now().UTC()
 	predicate := s.liveLease(run)
-	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_runs").Set("lease_expires_at", formatTime(now.Add(ttl))).Set("updated_at", formatTime(now)).Where(predicate).Build()
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_runs").Set("lease_expires_at", formatTime(now.Add(ttl))).Set("updated_at", formatTime(now)).Where(predicate).Build()
 	if err != nil {
 		return run, false, err
 	}
@@ -291,7 +291,7 @@ func (s *Store) Fail(ctx context.Context, run schedulersdk.Run, failure error, r
 	if terminal {
 		status, eventType = "dead_letter", "dead_lettered"
 	}
-	builder := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_runs").Set("status", status).Set("last_error", failure.Error()).Set("lease_owner", nil).Set("lease_expires_at", nil).Set("updated_at", formatTime(time.Now())).Where(s.liveLease(run))
+	builder := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_runs").Set("status", status).Set("last_error", failure.Error()).Set("lease_owner", nil).Set("lease_expires_at", nil).Set("updated_at", formatTime(time.Now())).Where(s.liveLease(run))
 	if terminal {
 		builder.Set("next_retry_at", nil)
 	} else {
@@ -315,7 +315,7 @@ func (s *Store) Fail(ctx context.Context, run schedulersdk.Run, failure error, r
 		return fmt.Errorf("Scheduler lease lost for run %s", run.Trigger.RunID)
 	}
 	if terminal {
-		insert, insertArgs, buildErr := ormbuilder.NewInsertBuilder(s.dialect, "scheduler_dead_letters").Columns("runtime_id", "run_id", "definition_key", "reason", "failed_at").Values(s.runtimeID, run.Trigger.RunID, run.Trigger.DefinitionKey, failure.Error(), formatTime(time.Now())).Build()
+		insert, insertArgs, buildErr := ormbuilder.NewInsertBuilder(s.dialect, "_scheduler_dead_letters").Columns("runtime_id", "run_id", "definition_key", "reason", "failed_at").Values(s.runtimeID, run.Trigger.RunID, run.Trigger.DefinitionKey, failure.Error(), formatTime(time.Now())).Build()
 		if buildErr != nil {
 			return buildErr
 		}
@@ -333,7 +333,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]schedulersdk.Run, error)
 	if limit <= 0 {
 		limit = 50
 	}
-	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "scheduler_runs").Columns("run_id").Where(ormbuilder.Equal("runtime_id", s.runtimeID)).OrderBy(ormbuilder.Descending("created_at")).Limit(limit).Build()
+	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("run_id").Where(ormbuilder.Equal("runtime_id", s.runtimeID)).OrderBy(ormbuilder.Descending("created_at")).Limit(limit).Build()
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +371,7 @@ func (s *Store) Get(ctx context.Context, id string) (schedulersdk.Run, error) {
 func (s *Store) Retry(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	now := time.Now().UTC()
 	predicate := ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(id)), ormbuilder.In("status", "failed", "dead_letter"))
-	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_runs").Set("status", "retrying").Set("next_retry_at", formatTime(now)).Set("lease_owner", nil).Set("lease_expires_at", nil).Set("updated_at", formatTime(now)).Where(predicate).Build()
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_runs").Set("status", "retrying").Set("next_retry_at", formatTime(now)).Set("lease_owner", nil).Set("lease_expires_at", nil).Set("updated_at", formatTime(now)).Where(predicate).Build()
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
@@ -388,7 +388,7 @@ func (s *Store) Retry(ctx context.Context, id, reason string) (schedulersdk.Run,
 	if affected != 1 {
 		return schedulersdk.Run{}, fmt.Errorf("Scheduler run %q is not retryable", id)
 	}
-	resolve, resolveArgs, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_dead_letters").Set("resolved_at", formatTime(now)).Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(id)), ormbuilder.Equal("resolved_at", nil))).Build()
+	resolve, resolveArgs, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_dead_letters").Set("resolved_at", formatTime(now)).Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(id)), ormbuilder.Equal("resolved_at", nil))).Build()
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
@@ -407,7 +407,7 @@ func (s *Store) Retry(ctx context.Context, id, reason string) (schedulersdk.Run,
 func (s *Store) Cancel(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	now := time.Now().UTC()
 	predicate := ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(id)), ormbuilder.In("status", "leased", "retrying"))
-	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_runs").Set("status", "cancelled").Set("next_retry_at", nil).Set("lease_owner", nil).Set("lease_expires_at", nil).SetExpression("fencing_token", ormbuilder.Add(ormbuilder.Column("fencing_token"), ormbuilder.Value(1))).Set("updated_at", formatTime(now)).Where(predicate).Build()
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_runs").Set("status", "cancelled").Set("next_retry_at", nil).Set("lease_owner", nil).Set("lease_expires_at", nil).SetExpression("fencing_token", ormbuilder.Add(ormbuilder.Column("fencing_token"), ormbuilder.Value(1))).Set("updated_at", formatTime(now)).Where(predicate).Build()
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
@@ -434,7 +434,7 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (schedulersdk.Run
 }
 
 func (s *Store) DeadLetter(ctx context.Context, runID string) (schedulersdk.DeadLetter, error) {
-	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "scheduler_dead_letters").Columns("definition_key", "reason", "failed_at", "resolved_at").Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(runID)))).Build()
+	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "_scheduler_dead_letters").Columns("definition_key", "reason", "failed_at", "resolved_at").Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(runID)))).Build()
 	if err != nil {
 		return schedulersdk.DeadLetter{}, err
 	}
@@ -452,7 +452,7 @@ func (s *Store) DeadLetter(ctx context.Context, runID string) (schedulersdk.Dead
 
 func (s *Store) ResolveDeadLetter(ctx context.Context, runID, reason string) (schedulersdk.DeadLetter, error) {
 	now := time.Now().UTC()
-	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_dead_letters").Set("resolved_at", formatTime(now)).Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(runID)), ormbuilder.Equal("resolved_at", nil))).Build()
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_dead_letters").Set("resolved_at", formatTime(now)).Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", strings.TrimSpace(runID)), ormbuilder.Equal("resolved_at", nil))).Build()
 	if err != nil {
 		return schedulersdk.DeadLetter{}, err
 	}
@@ -486,7 +486,7 @@ func (s *Store) RequeueDeadLetter(ctx context.Context, runID, reason string) (sc
 }
 
 func (s *Store) finish(ctx context.Context, run schedulersdk.Run, status, receipt, lastError string) error {
-	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_runs").Set("status", status).Set("receipt_json", nullable(receipt)).Set("last_error", nullable(lastError)).Set("lease_owner", nil).Set("lease_expires_at", nil).Set("updated_at", formatTime(time.Now())).Where(s.liveLease(run)).Build()
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_runs").Set("status", status).Set("receipt_json", nullable(receipt)).Set("last_error", nullable(lastError)).Set("lease_owner", nil).Set("lease_expires_at", nil).Set("updated_at", formatTime(time.Now())).Where(s.liveLease(run)).Build()
 	if err != nil {
 		return err
 	}
@@ -510,7 +510,7 @@ func (s *Store) finish(ctx context.Context, run schedulersdk.Run, status, receip
 }
 
 func (s *Store) get(ctx context.Context, id string) (schedulersdk.Run, error) {
-	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "scheduler_runs").Columns("definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "metadata_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "receipt_json", "last_error", "created_at", "updated_at").Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", id))).Build()
+	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "metadata_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "receipt_json", "last_error", "created_at", "updated_at").Where(ormbuilder.And(ormbuilder.Equal("runtime_id", s.runtimeID), ormbuilder.Equal("run_id", id))).Build()
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
@@ -529,7 +529,7 @@ func (s *Store) get(ctx context.Context, id string) (schedulersdk.Run, error) {
 }
 
 func (s *Store) definition(ctx context.Context, key string) (schedulersdk.Definition, bool, error) {
-	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "scheduler_schedule_state").Columns("definition_json").Where(s.definitionIdentity(key)).Build()
+	query, args, err := ormbuilder.NewSelectBuilder(s.dialect, "_scheduler_definition_states").Columns("definition_json").Where(s.definitionIdentity(key)).Build()
 	if err != nil {
 		return schedulersdk.Definition{}, false, err
 	}
@@ -550,7 +550,7 @@ func (s *Store) advanceCursor(ctx context.Context, d schedulersdk.Definition, sc
 }
 func (s *Store) advanceCursorWith(ctx context.Context, executor sqlExecutor, d schedulersdk.Definition, scheduled, now time.Time, status string) error {
 	next := schedule.NextSchedule(d.Schedule, scheduled)
-	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "scheduler_schedule_state").Set("next_run_at", formatTime(next)).Set("last_run_at", formatTime(scheduled)).Set("last_run_status", status).Set("updated_at", formatTime(now)).Where(s.definitionIdentity(d.Key)).Build()
+	update, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("next_run_at", formatTime(next)).Set("last_run_at", formatTime(scheduled)).Set("last_run_status", status).Set("updated_at", formatTime(now)).Where(s.definitionIdentity(d.Key)).Build()
 	if err != nil {
 		return err
 	}
@@ -562,7 +562,7 @@ func (s *Store) event(ctx context.Context, runID, kind, message string) error {
 }
 func (s *Store) eventWith(ctx context.Context, executor sqlExecutor, runID, kind, message string) error {
 	id := runID + ":" + kind + ":" + fmt.Sprint(time.Now().UnixNano())
-	insert, args, err := ormbuilder.NewInsertBuilder(s.dialect, "scheduler_run_events").Columns("runtime_id", "event_id", "run_id", "event_type", "message", "created_at").Values(s.runtimeID, id, runID, kind, nullable(message), formatTime(time.Now())).Build()
+	insert, args, err := ormbuilder.NewInsertBuilder(s.dialect, "_scheduler_run_events").Columns("runtime_id", "event_id", "run_id", "event_type", "message", "created_at").Values(s.runtimeID, id, runID, kind, nullable(message), formatTime(time.Now())).Build()
 	if err != nil {
 		return err
 	}

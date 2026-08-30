@@ -53,7 +53,7 @@ func TestDatabaseServicePersistsAndIsolatesSaaSApplications(t *testing.T) {
 		}
 	}
 	var count int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM "scheduler_runs"`).Scan(&count); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM "_scheduler_runs"`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {

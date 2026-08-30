@@ -19,14 +19,14 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 		primary []string
 		unique  [][]string
 	}{
-		{name: "scheduler_schedule_state", columns: []ormschema.ColumnDefinition{
+		{name: "_scheduler_definition_states", columns: []ormschema.ColumnDefinition{
 			required("runtime_id", ormschema.TextKey(191)), required("definition_key", ormschema.TextKey(191)),
 			required("revision", ormschema.TextKey(191)), required("enabled", ormschema.Boolean()),
 			required("definition_json", ormschema.JSON()), required("next_run_at", ormschema.TextKey(40)),
 			optional("last_run_at", ormschema.TextKey(40)), optional("last_run_status", ormschema.TextKey(32)),
 			required("snapshot_revision", ormschema.BigInt()), required("updated_at", ormschema.TextKey(40)),
 		}, primary: []string{"runtime_id", "definition_key"}},
-		{name: "scheduler_runs", columns: []ormschema.ColumnDefinition{
+		{name: "_scheduler_runs", columns: []ormschema.ColumnDefinition{
 			required("runtime_id", ormschema.TextKey(191)), required("run_id", ormschema.TextKey(191)),
 			required("definition_key", ormschema.TextKey(191)), required("definition_revision", ormschema.TextKey(191)),
 			required("scheduled_for", ormschema.TextKey(40)), required("window_key", ormschema.TextKey(191)),
@@ -37,11 +37,11 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 			optional("receipt_json", ormschema.JSON()), optional("last_error", ormschema.LongText()),
 			required("created_at", ormschema.TextKey(40)), required("updated_at", ormschema.TextKey(40)),
 		}, primary: []string{"runtime_id", "run_id"}, unique: [][]string{{"runtime_id", "definition_key", "scheduled_for"}}},
-		{name: "scheduler_run_events", columns: []ormschema.ColumnDefinition{
+		{name: "_scheduler_run_events", columns: []ormschema.ColumnDefinition{
 			required("runtime_id", ormschema.TextKey(191)), required("event_id", ormschema.TextKey(191)), required("run_id", ormschema.TextKey(191)),
 			required("event_type", ormschema.TextKey(64)), optional("message", ormschema.LongText()), optional("metadata_json", ormschema.JSON()), required("created_at", ormschema.TextKey(40)),
 		}, primary: []string{"runtime_id", "event_id"}},
-		{name: "scheduler_dead_letters", columns: []ormschema.ColumnDefinition{
+		{name: "_scheduler_dead_letters", columns: []ormschema.ColumnDefinition{
 			required("runtime_id", ormschema.TextKey(191)), required("run_id", ormschema.TextKey(191)), required("definition_key", ormschema.TextKey(191)),
 			required("reason", ormschema.LongText()), required("failed_at", ormschema.TextKey(40)), optional("resolved_at", ormschema.TextKey(40)),
 		}, primary: []string{"runtime_id", "run_id"}},
@@ -72,7 +72,7 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 // The host supplies the database, dialect, lock, transaction boundary and
 // migration ledger, but must not declare this module-owned table itself.
 func definitionTable(r modulehost.Dialect) *ormschema.TableBuilder {
-	return ormschema.NewTable(r, "scheduler_definitions").IfNotExists().Columns(
+	return ormschema.NewTable(r, "_scheduler_definitions").IfNotExists().Columns(
 		required("id", ormschema.TextKey(255)),
 		required("resource_key", ormschema.TextKey(255)),
 		required("object_key", ormschema.TextKey(255)),

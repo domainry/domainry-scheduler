@@ -25,7 +25,7 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 					}
 				}
 			}
-			if !strings.Contains(migrations[1].Statements[0], "scheduler_definitions") {
+			if !strings.Contains(migrations[1].Statements[0], "_scheduler_definitions") {
 				t.Fatalf("Scheduler definition table is not source-owned: %q", migrations[1].Statements[0])
 			}
 		})
