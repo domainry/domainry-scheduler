@@ -139,6 +139,13 @@ func TestFailureAtMaximumAttemptAtomicallyCreatesDeadLetter(t *testing.T) {
 	if status != "dead_letter" || reason == "" || deadLetters != 1 || events != 1 {
 		t.Fatalf("status=%q reason=%q dead_letters=%d events=%d", status, reason, deadLetters, events)
 	}
+	listed, err := store.DeadLetters(t.Context(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].RunID != run.Trigger.RunID || listed[0].DefinitionKey != definition.Key || listed[0].Status != "open" || listed[0].Reason == "" {
+		t.Fatalf("listed dead letters=%+v", listed)
+	}
 }
 
 func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {

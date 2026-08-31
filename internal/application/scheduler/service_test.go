@@ -70,6 +70,9 @@ func (*hostStub) Retry(context.Context, string, string) (schedulersdk.Run, error
 func (*hostStub) Cancel(context.Context, string, string) (schedulersdk.Run, error) {
 	return schedulersdk.Run{}, nil
 }
+func (*hostStub) DeadLetters(context.Context, int) ([]schedulersdk.DeadLetter, error) {
+	return nil, nil
+}
 func (*hostStub) DeadLetter(context.Context, string) (schedulersdk.DeadLetter, error) {
 	return schedulersdk.DeadLetter{}, nil
 }

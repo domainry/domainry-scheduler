@@ -185,6 +185,13 @@ func (s *DatabaseService) CancelRun(ctx context.Context, ref schedulersdk.Applic
 	}
 	return binding.CancelRun(ctx, id, reason)
 }
+func (s *DatabaseService) DeadLetters(ctx context.Context, ref schedulersdk.ApplicationRef, limit int) ([]schedulersdk.DeadLetter, error) {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return binding.DeadLetters(ctx, limit)
+}
 func (s *DatabaseService) DeadLetter(ctx context.Context, ref schedulersdk.ApplicationRef, id string) (schedulersdk.DeadLetter, error) {
 	binding, err := s.binding(ctx, ref)
 	if err != nil {

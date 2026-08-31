@@ -51,6 +51,15 @@ transport rather than importing the server implementation.
   - `direct` uses Scheduler's HTTP executor, with idempotency/window headers, bounded responses, HMAC signing and retry classification.
 
 Definitions are configuration. A successful downstream call must return a durable receipt before a run is accepted.
+Runtime-operation target semantics remain downstream-owner concerns. The
+current shared authoring contract exposes scheduled Workflow dispatch and
+Report snapshot refresh; governed report export runs through a scheduled
+Workflow rather than letting Scheduler create Report records.
+
+Run history and dead-letter queues stay Scheduler-owned in both deployment
+topologies. Runtime operations consoles query them through the SDK `Binding`;
+Runtime only authorizes and projects the response and never mirrors the rows as
+business records.
 
 ## Repository layout
 

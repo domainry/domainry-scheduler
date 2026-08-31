@@ -241,6 +241,9 @@ func (b *Service) RetryRun(ctx context.Context, id, reason string) (schedulersdk
 func (b *Service) CancelRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	return b.runs.Cancel(ctx, id, reason)
 }
+func (b *Service) DeadLetters(ctx context.Context, limit int) ([]schedulersdk.DeadLetter, error) {
+	return b.runs.DeadLetters(ctx, limit)
+}
 func (b *Service) DeadLetter(ctx context.Context, id string) (schedulersdk.DeadLetter, error) {
 	return b.runs.DeadLetter(ctx, id)
 }

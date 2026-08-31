@@ -65,6 +65,9 @@ func (*transportStub) RetryRun(context.Context, schedulersdk.ApplicationRef, str
 func (*transportStub) CancelRun(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error) {
 	return schedulersdk.Run{}, nil
 }
+func (*transportStub) DeadLetters(context.Context, schedulersdk.ApplicationRef, int) ([]schedulersdk.DeadLetter, error) {
+	return nil, nil
+}
 func (*transportStub) DeadLetter(context.Context, schedulersdk.ApplicationRef, string) (schedulersdk.DeadLetter, error) {
 	return schedulersdk.DeadLetter{}, nil
 }

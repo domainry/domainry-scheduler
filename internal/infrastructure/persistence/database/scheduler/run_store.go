@@ -448,6 +448,44 @@ func (s *Store) DeadLetter(ctx context.Context, runID string) (schedulersdk.Dead
 	return schedulersdk.DeadLetter{RunID: strings.TrimSpace(runID), DefinitionKey: definition, Status: status, Reason: reason, FailedAt: parseTime(failed), ResolvedAt: parseTime(resolved.String)}, nil
 }
 
+func (s *Store) DeadLetters(ctx context.Context, limit int) ([]schedulersdk.DeadLetter, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	queryValue, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_dead_letters").
+		Columns("run_id", "definition_key", "reason", "failed_at", "resolved_at").
+		Where(query.Equal("runtime_id", s.runtimeID)).
+		OrderBy(query.Descending("failed_at")).Limit(limit).Build()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, queryValue, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]schedulersdk.DeadLetter, 0)
+	for rows.Next() {
+		var runID, definition, reason, failed string
+		var resolved sql.NullString
+		if err := rows.Scan(&runID, &definition, &reason, &failed, &resolved); err != nil {
+			return nil, err
+		}
+		status := "open"
+		if resolved.Valid && strings.TrimSpace(resolved.String) != "" {
+			status = "resolved"
+		}
+		items = append(items, schedulersdk.DeadLetter{
+			RunID: runID, DefinitionKey: definition, Status: status, Reason: reason,
+			FailedAt: parseTime(failed), ResolvedAt: parseTime(resolved.String),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func (s *Store) ResolveDeadLetter(ctx context.Context, runID, reason string) (schedulersdk.DeadLetter, error) {
 	now := time.Now().UTC()
 	update, args, err := query.NewUpdateBuilder(s.dialect, "_scheduler_dead_letters").Set("resolved_at", formatTime(now)).Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("run_id", strings.TrimSpace(runID)), query.Equal("resolved_at", nil))).Build()

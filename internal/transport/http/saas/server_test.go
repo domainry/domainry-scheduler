@@ -11,7 +11,8 @@ import (
 )
 
 type serviceStub struct {
-	snapshot schedulersdk.DefinitionSnapshot
+	snapshot    schedulersdk.DefinitionSnapshot
+	deadLetters []schedulersdk.DeadLetter
 }
 
 func (s *serviceStub) Descriptor(context.Context, schedulersdk.ApplicationRef) (schedulersdk.Descriptor, error) {
@@ -45,6 +46,9 @@ func (*serviceStub) RetryRun(context.Context, schedulersdk.ApplicationRef, strin
 func (*serviceStub) CancelRun(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error) {
 	return schedulersdk.Run{}, nil
 }
+func (s *serviceStub) DeadLetters(context.Context, schedulersdk.ApplicationRef, int) ([]schedulersdk.DeadLetter, error) {
+	return s.deadLetters, nil
+}
 func (*serviceStub) DeadLetter(context.Context, schedulersdk.ApplicationRef, string) (schedulersdk.DeadLetter, error) {
 	return schedulersdk.DeadLetter{}, nil
 }
@@ -73,5 +77,13 @@ func TestServerAndSDKHTTPTransportPublishDefinitions(t *testing.T) {
 	}
 	if service.snapshot.Revision != 9 || len(service.snapshot.Definitions) != 1 {
 		t.Fatalf("snapshot=%#v", service.snapshot)
+	}
+	service.deadLetters = []schedulersdk.DeadLetter{{RunID: "run-dead", DefinitionKey: "daily", Status: "open"}}
+	deadLetters, err := transport.DeadLetters(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deadLetters) != 1 || deadLetters[0].RunID != "run-dead" {
+		t.Fatalf("dead letters=%+v", deadLetters)
 	}
 }

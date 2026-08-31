@@ -22,6 +22,7 @@ type Service interface {
 	Run(context.Context, schedulersdk.ApplicationRef, string) (schedulersdk.Run, error)
 	RetryRun(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error)
 	CancelRun(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error)
+	DeadLetters(context.Context, schedulersdk.ApplicationRef, int) ([]schedulersdk.DeadLetter, error)
 	DeadLetter(context.Context, schedulersdk.ApplicationRef, string) (schedulersdk.DeadLetter, error)
 	ResolveDeadLetter(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.DeadLetter, error)
 	RequeueDeadLetter(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error)
@@ -170,6 +171,13 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			}
 		}
 	case "dead-letters":
+		if len(parts) == 4 && request.Method == http.MethodGet {
+			limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
+			var items []schedulersdk.DeadLetter
+			items, err = s.service.DeadLetters(request.Context(), application, limit)
+			value = map[string]any{"items": items}
+			break
+		}
 		if len(parts) < 5 {
 			break
 		}

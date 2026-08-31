@@ -107,6 +107,9 @@ func (b *binding) RetryRun(ctx context.Context, id, reason string) (schedulersdk
 func (b *binding) CancelRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	return b.transport.CancelRun(ctx, b.application, id, reason)
 }
+func (b *binding) DeadLetters(ctx context.Context, limit int) ([]schedulersdk.DeadLetter, error) {
+	return b.transport.DeadLetters(ctx, b.application, limit)
+}
 func (b *binding) DeadLetter(ctx context.Context, id string) (schedulersdk.DeadLetter, error) {
 	return b.transport.DeadLetter(ctx, b.application, id)
 }
