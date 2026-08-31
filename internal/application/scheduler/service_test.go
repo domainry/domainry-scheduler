@@ -7,7 +7,7 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
-	schedulerrepository "github.com/domainry/domainry-scheduler-sdk/repository"
+	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 )
 
 type hostStub struct {
@@ -19,14 +19,14 @@ type hostStub struct {
 	renewed    int
 	loseLease  bool
 	dispatchFn func(context.Context) (schedulersdk.DownstreamReceipt, error)
-	snapshot   schedulerrepository.DefinitionSnapshot
+	snapshot   schedulerpersistence.DefinitionSnapshot
 }
 
-func (h *hostStub) SyncDefinitions(_ context.Context, snapshot schedulerrepository.DefinitionSnapshot) error {
+func (h *hostStub) SyncDefinitions(_ context.Context, snapshot schedulerpersistence.DefinitionSnapshot) error {
 	h.snapshot = snapshot
 	return nil
 }
-func (h *hostStub) DefinitionSnapshot(context.Context) (schedulerrepository.DefinitionSnapshot, error) {
+func (h *hostStub) DefinitionSnapshot(context.Context) (schedulerpersistence.DefinitionSnapshot, error) {
 	return h.snapshot, nil
 }
 

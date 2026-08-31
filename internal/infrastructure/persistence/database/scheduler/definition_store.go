@@ -12,7 +12,7 @@ import (
 	"github.com/domainry/domainry-orm/query"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
-	schedulerrepository "github.com/domainry/domainry-scheduler-sdk/repository"
+	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 )
 
 type DefinitionStore struct {
@@ -24,7 +24,7 @@ func NewDefinitionStore(database modulehost.Database, dialect modulehost.Dialect
 	return DefinitionStore{database: database, dialect: dialect}
 }
 
-func (s DefinitionStore) SyncDefinitions(ctx context.Context, snapshot schedulerrepository.DefinitionSnapshot) error {
+func (s DefinitionStore) SyncDefinitions(ctx context.Context, snapshot schedulerpersistence.DefinitionSnapshot) error {
 	if s.database == nil || s.dialect == nil {
 		return fmt.Errorf("Scheduler definition store is unavailable")
 	}
@@ -89,31 +89,31 @@ func (s DefinitionStore) SyncDefinitions(ctx context.Context, snapshot scheduler
 	return tx.Commit()
 }
 
-func (s DefinitionStore) DefinitionSnapshot(ctx context.Context) (schedulerrepository.DefinitionSnapshot, error) {
+func (s DefinitionStore) DefinitionSnapshot(ctx context.Context) (schedulerpersistence.DefinitionSnapshot, error) {
 	if s.database == nil || s.dialect == nil {
-		return schedulerrepository.DefinitionSnapshot{}, fmt.Errorf("Scheduler definition store is unavailable")
+		return schedulerpersistence.DefinitionSnapshot{}, fmt.Errorf("Scheduler definition store is unavailable")
 	}
 	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_definitions").Columns(
 		"payload_json", "schema_version", "source_kind", "source_id",
 	).Where(query.IsNull("disabled_at")).OrderBy(query.Ascending("resource_key")).Build()
 	if err != nil {
-		return schedulerrepository.DefinitionSnapshot{}, err
+		return schedulerpersistence.DefinitionSnapshot{}, err
 	}
 	rows, err := s.database.QueryContext(ctx, statement, args...)
 	if err != nil {
-		return schedulerrepository.DefinitionSnapshot{}, err
+		return schedulerpersistence.DefinitionSnapshot{}, err
 	}
 	defer rows.Close()
-	result := schedulerrepository.DefinitionSnapshot{Definitions: []schedulersdk.Definition{}}
+	result := schedulerpersistence.DefinitionSnapshot{Definitions: []schedulersdk.Definition{}}
 	for rows.Next() {
 		var raw []byte
 		var version, sourceKind, sourceID string
 		if err := rows.Scan(&raw, &version, &sourceKind, &sourceID); err != nil {
-			return schedulerrepository.DefinitionSnapshot{}, err
+			return schedulerpersistence.DefinitionSnapshot{}, err
 		}
 		var definition schedulersdk.Definition
 		if err := json.Unmarshal(raw, &definition); err != nil {
-			return schedulerrepository.DefinitionSnapshot{}, err
+			return schedulerpersistence.DefinitionSnapshot{}, err
 		}
 		result.Definitions = append(result.Definitions, definition)
 		if result.SchemaVersion == "" {
@@ -121,7 +121,7 @@ func (s DefinitionStore) DefinitionSnapshot(ctx context.Context) (schedulerrepos
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return schedulerrepository.DefinitionSnapshot{}, err
+		return schedulerpersistence.DefinitionSnapshot{}, err
 	}
 	raw, _ := json.Marshal(result.Definitions)
 	sum := sha256.Sum256(raw)
@@ -129,4 +129,4 @@ func (s DefinitionStore) DefinitionSnapshot(ctx context.Context) (schedulerrepos
 	return result, nil
 }
 
-var _ schedulerrepository.DefinitionRepository = DefinitionStore{}
+var _ schedulerpersistence.DefinitionRepository = DefinitionStore{}

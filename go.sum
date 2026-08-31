@@ -9,8 +9,8 @@ github.com/domainry/domainry-foundation v0.1.0-dev.6 h1:V5s/3IRGb0PFBZgqlX8Rb3vK
 github.com/domainry/domainry-foundation v0.1.0-dev.6/go.mod h1:+BYiJIIQbc1Z9Xfmo7EQCkfcB8uNV6Fcd+RHFigAW4o=
 github.com/domainry/domainry-orm v0.1.29 h1:cJLNjxCDmqQfY3//5l25T51tbrPUw30cO3aandF5VCw=
 github.com/domainry/domainry-orm v0.1.29/go.mod h1:NKMojLuridkYCS4i5L7BO7LMTMsf/uOkWQ9OQ+9Vdn4=
-github.com/domainry/domainry-scheduler-sdk v0.1.0 h1:CppQNeo/4Tfp6FY+ofuZ1tTqgZfp/8ZkhdSKN8XVR8c=
-github.com/domainry/domainry-scheduler-sdk v0.1.0/go.mod h1:8Ga2fJg4s9zV+UtzP7xkD3QPgTfLTdsA5Ml0xmoJbQM=
+github.com/domainry/domainry-scheduler-sdk v0.1.1 h1:AhnZr0sqUDD9ZnrBMIZx0yVSBmiEawKv5/WNOIrNlgg=
+github.com/domainry/domainry-scheduler-sdk v0.1.1/go.mod h1:8Ga2fJg4s9zV+UtzP7xkD3QPgTfLTdsA5Ml0xmoJbQM=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/go-sql-driver/mysql v1.10.0 h1:Q+1LV8DkHJvSYAdR83XzuhDaTykuDx0l6fkXxoWCWfw=

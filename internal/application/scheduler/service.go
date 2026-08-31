@@ -12,7 +12,7 @@ import (
 	"github.com/domainry/domainry-foundation/worker"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
-	schedulerrepository "github.com/domainry/domainry-scheduler-sdk/repository"
+	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	"github.com/domainry/domainry-scheduler-sdk/schedule"
 	domainservice "github.com/domainry/domainry-scheduler/internal/domain/scheduler/service"
 )
@@ -22,7 +22,7 @@ type Service struct {
 	host                 modulehost.Host
 	directHTTP           modulehost.Dispatcher
 	runs                 modulehost.RunStore
-	definitionRepository schedulerrepository.DefinitionRepository
+	definitionRepository schedulerpersistence.DefinitionRepository
 	mode                 schedulersdk.DeploymentMode
 	ctx                  context.Context
 	cancel               context.CancelFunc
@@ -33,7 +33,7 @@ type Service struct {
 	closeOnce            sync.Once
 }
 
-func NewService(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, directHTTP modulehost.Dispatcher, runs modulehost.RunStore, definitions schedulerrepository.DefinitionRepository, mode schedulersdk.DeploymentMode) *Service {
+func NewService(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, directHTTP modulehost.Dispatcher, runs modulehost.RunStore, definitions schedulerpersistence.DefinitionRepository, mode schedulersdk.DeploymentMode) *Service {
 	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute}
 }
 
@@ -49,7 +49,7 @@ func (b *Service) Reconcile(ctx context.Context) error {
 	if b.definitionRepository == nil {
 		return fmt.Errorf("Scheduler definition repository is unavailable")
 	}
-	if err := b.definitionRepository.SyncDefinitions(ctx, schedulerrepository.DefinitionSnapshot{
+	if err := b.definitionRepository.SyncDefinitions(ctx, schedulerpersistence.DefinitionSnapshot{
 		Revision: snapshot.Revision, SchemaVersion: fmt.Sprint(snapshot.Revision), SourceKind: "runtime_host", SourceID: b.application.RuntimeID, Definitions: snapshot.Definitions,
 	}); err != nil {
 		return fmt.Errorf("persist Scheduler definitions: %w", err)
@@ -92,11 +92,11 @@ func (b *Service) Reconcile(ctx context.Context) error {
 	return nil
 }
 
-func (b *Service) DefinitionRepository() schedulerrepository.DefinitionRepository {
+func (b *Service) DefinitionRepository() schedulerpersistence.DefinitionRepository {
 	return b.definitionRepository
 }
 
-var _ schedulerrepository.Binding = (*Service)(nil)
+var _ schedulerpersistence.Binding = (*Service)(nil)
 
 func (*Service) Preview(ctx context.Context, value schedulersdk.Schedule, after time.Time, count int) ([]time.Time, error) {
 	if err := ctx.Err(); err != nil {
