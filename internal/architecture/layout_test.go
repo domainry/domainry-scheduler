@@ -14,7 +14,7 @@ func TestRepositoryRootContainsOnlyReviewedPackages(t *testing.T) {
 		t.Fatal("resolve architecture test path")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	allowed := map[string]bool{"admin": true, "internal": true, "module": true, "remote": true, "server": true}
+	allowed := map[string]bool{"admin": true, "cmd": true, "internal": true, "module": true, "remote": true}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +45,7 @@ func TestSchedulerOwnsDurableStateInsteadOfBorrowingRunStore(t *testing.T) {
 		t.Fatal("resolve architecture test path")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	factory, err := os.ReadFile(filepath.Join(root, "module", "factory.go"))
+	factory, err := os.ReadFile(filepath.Join(root, "internal", "assembly", "module", "open.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,9 +64,17 @@ func TestSchedulerOwnsDurableStateInsteadOfBorrowingRunStore(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
+		"cmd/scheduler-server/main.go",
+		"internal/application/scheduler/service.go",
+		"internal/domain/scheduler/service/retry_policy.go",
+		"internal/assembly/module/open.go",
+		"internal/assembly/saas/database_service.go",
+		"internal/adapter/http/executor.go",
+		"internal/adapter/schedulersdk/downstream.go",
+		"internal/transport/http/saas/server.go",
 		"internal/infrastructure/persistence/schema.go",
 		"internal/infrastructure/persistence/database/store.go",
-		"internal/infrastructure/persistence/database/schedule/store.go",
+		"internal/infrastructure/persistence/database/scheduler/run_store.go",
 	} {
 		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(required))); err != nil || info.IsDir() {
 			t.Errorf("source-owned Scheduler persistence %q is missing", required)
@@ -77,7 +85,7 @@ func TestSchedulerOwnsDurableStateInsteadOfBorrowingRunStore(t *testing.T) {
 func TestSchedulerPersistenceUsesDomainryORM(t *testing.T) {
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "infrastructure", "persistence"))
-	for _, name := range []string{"engine.go", "migration.go", "database/schema/migrations.go", "database/schedule/store.go"} {
+	for _, name := range []string{"engine.go", "database/migration/coordinator.go", "database/schema/migrations.go", "database/scheduler/run_store.go"} {
 		raw, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {
 			t.Fatal(err)
@@ -94,10 +102,75 @@ func TestSchedulerPersistenceUsesDomainryORM(t *testing.T) {
 	}
 }
 
-func TestScheduleRepositoryReceivesDatabaseAndDialectPorts(t *testing.T) {
+func TestPublicAdaptersDoNotDependOnEachOther(t *testing.T) {
+	_, source, _, _ := runtime.Caller(0)
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+	for _, packageName := range []string{"module", "remote"} {
+		packageRoot := filepath.Join(root, packageName)
+		err := filepath.WalkDir(packageRoot, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, peer := range []string{"module", "remote"} {
+				if peer == packageName {
+					continue
+				}
+				dependency := "github.com/domainry/domainry-scheduler/" + peer
+				if strings.Contains(string(content), dependency) {
+					t.Errorf("public adapter %s depends on peer adapter %s: %s", packageName, peer, path)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSchedulerCoreDoesNotDependOnOuterLayers(t *testing.T) {
+	_, source, _, _ := runtime.Caller(0)
+	internalRoot := filepath.Clean(filepath.Join(filepath.Dir(source), ".."))
+	for _, core := range []string{"application", "domain"} {
+		err := filepath.WalkDir(filepath.Join(internalRoot, core), func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{
+				"github.com/domainry/domainry-scheduler/module",
+				"github.com/domainry/domainry-scheduler/remote",
+				"github.com/domainry/domainry-scheduler/internal/adapter",
+				"github.com/domainry/domainry-scheduler/internal/assembly",
+				"github.com/domainry/domainry-scheduler/internal/transport",
+				"github.com/domainry/domainry-scheduler/internal/infrastructure",
+			} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("Scheduler %s layer depends on outer layer %q: %s", core, forbidden, path)
+				}
+			}
+			if core == "domain" && strings.Contains(string(content), "github.com/domainry/domainry-scheduler/internal/application") {
+				t.Errorf("Scheduler domain depends on application layer: %s", path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRunRepositoryReceivesDatabaseAndDialectPorts(t *testing.T) {
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "infrastructure", "persistence"))
-	raw, err := os.ReadFile(filepath.Join(root, "database", "schedule", "store.go"))
+	raw, err := os.ReadFile(filepath.Join(root, "database", "scheduler", "run_store.go"))
 	if err != nil {
 		t.Fatal(err)
 	}

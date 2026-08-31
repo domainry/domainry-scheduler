@@ -1,4 +1,4 @@
-package server
+package schedulersdkadapter
 
 import (
 	"context"

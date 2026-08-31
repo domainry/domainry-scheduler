@@ -1,4 +1,4 @@
-package database
+package scheduler
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	ormbuilder "github.com/domainry/domainry-orm/query"
+	"github.com/domainry/domainry-orm/query"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerrepository "github.com/domainry/domainry-scheduler-sdk/repository"
@@ -37,8 +37,8 @@ func (s DefinitionStore) SyncDefinitions(ctx context.Context, snapshot scheduler
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	disable, args, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_definitions").Set("disabled_at", now).Where(ormbuilder.And(
-		ormbuilder.Equal("source_kind", snapshot.SourceKind), ormbuilder.Equal("source_id", snapshot.SourceID), ormbuilder.IsNull("disabled_at"),
+	disable, args, err := query.NewUpdateBuilder(s.dialect, "_scheduler_definitions").Set("disabled_at", now).Where(query.And(
+		query.Equal("source_kind", snapshot.SourceKind), query.Equal("source_id", snapshot.SourceID), query.IsNull("disabled_at"),
 	)).Build()
 	if err != nil {
 		return err
@@ -57,11 +57,11 @@ func (s DefinitionStore) SyncDefinitions(ctx context.Context, snapshot scheduler
 		}
 		sum := sha256.Sum256(raw)
 		key := strings.TrimSpace(definition.Key)
-		update, updateArgs, err := ormbuilder.NewUpdateBuilder(s.dialect, "_scheduler_definitions").
+		update, updateArgs, err := query.NewUpdateBuilder(s.dialect, "_scheduler_definitions").
 			Set("name", definition.Name).Set("payload_json", raw).Set("schema_version", snapshot.SchemaVersion).
 			Set("schema_hash", hex.EncodeToString(sum[:])).Set("source_kind", snapshot.SourceKind).
 			Set("source_id", snapshot.SourceID).Set("disabled_at", nil).Set("updated_at", now).
-			Where(ormbuilder.Equal("resource_key", key)).Build()
+			Where(query.Equal("resource_key", key)).Build()
 		if err != nil {
 			return err
 		}
@@ -76,7 +76,7 @@ func (s DefinitionStore) SyncDefinitions(ctx context.Context, snapshot scheduler
 		if affected > 0 {
 			continue
 		}
-		statement, values, err := ormbuilder.NewInsertBuilder(s.dialect, "_scheduler_definitions").Columns(
+		statement, values, err := query.NewInsertBuilder(s.dialect, "_scheduler_definitions").Columns(
 			"id", "resource_key", "object_key", "name", "payload_json", "schema_version", "schema_hash", "source_kind", "source_id", "disabled_at", "created_at", "updated_at",
 		).Values("scheduler:"+key, key, "", definition.Name, raw, snapshot.SchemaVersion, hex.EncodeToString(sum[:]), snapshot.SourceKind, snapshot.SourceID, nil, now, now).Build()
 		if err != nil {
@@ -93,9 +93,9 @@ func (s DefinitionStore) DefinitionSnapshot(ctx context.Context) (schedulerrepos
 	if s.database == nil || s.dialect == nil {
 		return schedulerrepository.DefinitionSnapshot{}, fmt.Errorf("Scheduler definition store is unavailable")
 	}
-	statement, args, err := ormbuilder.NewSelectBuilder(s.dialect, "_scheduler_definitions").Columns(
+	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_definitions").Columns(
 		"payload_json", "schema_version", "source_kind", "source_id",
-	).Where(ormbuilder.IsNull("disabled_at")).OrderBy(ormbuilder.Ascending("resource_key")).Build()
+	).Where(query.IsNull("disabled_at")).OrderBy(query.Ascending("resource_key")).Build()
 	if err != nil {
 		return schedulerrepository.DefinitionSnapshot{}, err
 	}

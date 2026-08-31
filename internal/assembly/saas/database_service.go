@@ -1,4 +1,4 @@
-package server
+package saas
 
 import (
 	"context"
@@ -10,16 +10,15 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulersdkadapter "github.com/domainry/domainry-scheduler/internal/adapter/schedulersdk"
+	moduleassembly "github.com/domainry/domainry-scheduler/internal/assembly/module"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence"
-	schedulermodule "github.com/domainry/domainry-scheduler/module"
 )
 
-type DownstreamHost interface {
-	modulehost.Dispatcher
-	modulehost.HTTPConnectionProvider
-}
+type DownstreamHost = schedulersdkadapter.DownstreamHost
 
 type DatabaseServiceOptions struct {
+	Context     context.Context
 	Database    *sql.DB
 	Driver      string
 	Schema      string
@@ -34,6 +33,8 @@ type DatabaseServiceOptions struct {
 type DatabaseService struct {
 	options      DatabaseServiceOptions
 	dialect      modulehost.Dialect
+	ctx          context.Context
+	cancel       context.CancelFunc
 	mu           sync.Mutex
 	applications map[string]*databaseApplication
 }
@@ -62,7 +63,12 @@ func NewDatabaseService(options DatabaseServiceOptions) (*DatabaseService, error
 	if err != nil {
 		return nil, fmt.Errorf("Scheduler SaaS database dialect: %w", err)
 	}
-	return &DatabaseService{options: options, dialect: dialect, applications: map[string]*databaseApplication{}}, nil
+	parent := options.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	return &DatabaseService{options: options, dialect: dialect, ctx: ctx, cancel: cancel, applications: map[string]*databaseApplication{}}, nil
 }
 
 func (s *DatabaseService) application(ctx context.Context, ref schedulersdk.ApplicationRef) (*databaseApplication, error) {
@@ -85,7 +91,7 @@ func (s *DatabaseService) application(ctx context.Context, ref schedulersdk.Appl
 	state := &databaseApplication{}
 	host := &databaseApplicationHost{service: s.options, dialect: s.dialect, application: state, downstream: downstream}
 	state.host = host
-	binding, err := schedulermodule.NewFactory(schedulermodule.Options{}).OpenSaaSApplication(ctx, ref, host)
+	binding, err := moduleassembly.OpenSaaS(s.ctx, ref, host)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +100,7 @@ func (s *DatabaseService) application(ctx context.Context, ref schedulersdk.Appl
 	if worker == (schedulersdk.WorkerConfig{}) {
 		worker.Enabled = true
 	}
-	workerCtx, cancel := context.WithCancel(context.Background())
+	workerCtx, cancel := context.WithCancel(s.ctx)
 	state.cancel = cancel
 	state.done = binding.Start(workerCtx, worker)
 	s.applications[key] = state
@@ -215,6 +221,28 @@ func (s *DatabaseService) Close(ctx context.Context, ref schedulersdk.Applicatio
 	return app.binding.Close(ctx)
 }
 
+// Shutdown stops every application worker owned by this SaaS process.
+func (s *DatabaseService) Shutdown(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.cancel()
+	s.mu.Lock()
+	applications := s.applications
+	s.applications = map[string]*databaseApplication{}
+	s.mu.Unlock()
+	var firstErr error
+	for _, app := range applications {
+		if app.cancel != nil {
+			app.cancel()
+		}
+		if err := app.binding.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func (h *databaseApplicationHost) Definitions() modulehost.DefinitionProvider { return h }
 func (h *databaseApplicationHost) Dispatcher() modulehost.Dispatcher          { return h.downstream }
 func (h *databaseApplicationHost) HTTPConnections() modulehost.HTTPConnectionProvider {
@@ -237,5 +265,4 @@ func cloneSnapshot(value schedulersdk.DefinitionSnapshot) schedulersdk.Definitio
 	return out
 }
 
-var _ Service = (*DatabaseService)(nil)
-var _ schedulermodule.SaaSHost = (*databaseApplicationHost)(nil)
+var _ moduleassembly.SaaSHost = (*databaseApplicationHost)(nil)

@@ -1,4 +1,4 @@
-package server
+package schedulersdkadapter
 
 import (
 	"context"
@@ -8,6 +8,11 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/dispatchgateway"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
+
+type DownstreamHost interface {
+	modulehost.Dispatcher
+	modulehost.HTTPConnectionProvider
+}
 
 // RemoteDownstreams adapts the authenticated Scheduler-to-Runtime callback
 // protocol for standalone SaaS deployments. Runtime-owned operations and

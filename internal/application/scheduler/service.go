@@ -1,4 +1,4 @@
-package module
+package scheduler
 
 import (
 	"context"
@@ -14,12 +14,13 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerrepository "github.com/domainry/domainry-scheduler-sdk/repository"
 	"github.com/domainry/domainry-scheduler-sdk/schedule"
-	httpexecutor "github.com/domainry/domainry-scheduler/internal/executor/http"
+	domainservice "github.com/domainry/domainry-scheduler/internal/domain/scheduler/service"
 )
 
-type binding struct {
+type Service struct {
 	application          schedulersdk.ApplicationRef
 	host                 modulehost.Host
+	directHTTP           modulehost.Dispatcher
 	runs                 modulehost.RunStore
 	definitionRepository schedulerrepository.DefinitionRepository
 	mode                 schedulersdk.DeploymentMode
@@ -32,15 +33,15 @@ type binding struct {
 	closeOnce            sync.Once
 }
 
-func newBinding(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, runs modulehost.RunStore, definitions schedulerrepository.DefinitionRepository, mode schedulersdk.DeploymentMode) *binding {
-	return &binding{application: application, host: host, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute}
+func NewService(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, directHTTP modulehost.Dispatcher, runs modulehost.RunStore, definitions schedulerrepository.DefinitionRepository, mode schedulersdk.DeploymentMode) *Service {
+	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute}
 }
 
-func (b *binding) Descriptor() schedulersdk.Descriptor {
+func (b *Service) Descriptor() schedulersdk.Descriptor {
 	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: b.mode, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence"}}
 }
 
-func (b *binding) Reconcile(ctx context.Context) error {
+func (b *Service) Reconcile(ctx context.Context) error {
 	snapshot, err := b.host.Definitions().Snapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("read Scheduler definitions: %w", err)
@@ -91,13 +92,13 @@ func (b *binding) Reconcile(ctx context.Context) error {
 	return nil
 }
 
-func (b *binding) DefinitionRepository() schedulerrepository.DefinitionRepository {
+func (b *Service) DefinitionRepository() schedulerrepository.DefinitionRepository {
 	return b.definitionRepository
 }
 
-var _ schedulerrepository.Binding = (*binding)(nil)
+var _ schedulerrepository.Binding = (*Service)(nil)
 
-func (*binding) Preview(ctx context.Context, value schedulersdk.Schedule, after time.Time, count int) ([]time.Time, error) {
+func (*Service) Preview(ctx context.Context, value schedulersdk.Schedule, after time.Time, count int) ([]time.Time, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -122,7 +123,7 @@ func (*binding) Preview(ctx context.Context, value schedulersdk.Schedule, after 
 	return result, nil
 }
 
-func (b *binding) Tick(ctx context.Context, now time.Time, limit int) (int, error) {
+func (b *Service) Tick(ctx context.Context, now time.Time, limit int) (int, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -147,7 +148,7 @@ func (b *binding) Tick(ctx context.Context, now time.Time, limit int) (int, erro
 	return processed, firstErr
 }
 
-func (b *binding) TriggerNow(ctx context.Context, key, reason string) (schedulersdk.Run, error) {
+func (b *Service) TriggerNow(ctx context.Context, key, reason string) (schedulersdk.Run, error) {
 	b.mu.RLock()
 	definition, found := b.definitions[strings.TrimSpace(key)]
 	b.mu.RUnlock()
@@ -164,11 +165,11 @@ func (b *binding) TriggerNow(ctx context.Context, key, reason string) (scheduler
 	run.Trigger.Metadata = metadata
 	return run, b.dispatchClaimed(ctx, run, definition)
 }
-func (b *binding) Reschedule(ctx context.Context, key string, nextRunAt time.Time, reason string) error {
+func (b *Service) Reschedule(ctx context.Context, key string, nextRunAt time.Time, reason string) error {
 	return b.runs.Reschedule(ctx, strings.TrimSpace(key), nextRunAt.UTC(), strings.TrimSpace(reason))
 }
 
-func (b *binding) dispatch(ctx context.Context, item modulehost.DueTrigger) error {
+func (b *Service) dispatch(ctx context.Context, item modulehost.DueTrigger) error {
 	run, claimed, err := b.runs.Claim(ctx, item, b.currentLeaseTTL())
 	if err != nil || !claimed {
 		return err
@@ -176,7 +177,7 @@ func (b *binding) dispatch(ctx context.Context, item modulehost.DueTrigger) erro
 	return b.dispatchClaimed(ctx, run, item.Definition)
 }
 
-func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, definition schedulersdk.Definition) error {
+func (b *Service) dispatchClaimed(ctx context.Context, run schedulersdk.Run, definition schedulersdk.Definition) error {
 	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
 	cancel := func() { cancelDispatch() }
 	if definition.Policy.Timeout > 0 {
@@ -202,7 +203,7 @@ func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 	var receipt schedulersdk.DownstreamReceipt
 	var err error
 	if run.Trigger.Target.Type == "http" && strings.EqualFold(strings.TrimSpace(run.Trigger.Target.DispatchMode), "direct") {
-		receipt, err = httpexecutor.New(b.host.HTTPConnections(), nil).Dispatch(workCtx, run.Trigger)
+		receipt, err = b.directHTTP.Dispatch(workCtx, run.Trigger)
 	} else {
 		receipt, err = b.host.Dispatcher().Dispatch(workCtx, run.Trigger)
 	}
@@ -211,55 +212,46 @@ func (b *binding) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 		return leaseErr
 	}
 	if err != nil {
-		_ = b.runs.Fail(ctx, run, err, nextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
+		_ = b.runs.Fail(ctx, run, err, domainservice.NextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
 		return err
 	}
 	if strings.TrimSpace(receipt.ID) == "" {
 		err = fmt.Errorf("downstream owner returned no durable receipt")
-		_ = b.runs.Fail(ctx, run, err, nextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
+		_ = b.runs.Fail(ctx, run, err, domainservice.NextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
 		return err
 	}
 	return b.runs.Accept(ctx, run, receipt)
 }
 
-func (b *binding) currentLeaseTTL() time.Duration {
+func (b *Service) currentLeaseTTL() time.Duration {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.leaseTTL
 }
 
-func nextRetry(policy schedulersdk.Policy, attempt int, now time.Time) time.Time {
-	baseDelay := policy.RetryInitial
-	if baseDelay <= 0 {
-		baseDelay = 30 * time.Second
-	}
-	retry := worker.RetryPolicy{BaseDelay: baseDelay, MaxDelay: policy.RetryMax, Backoff: worker.BackoffExponential}
-	return now.Add(retry.Delay(attempt, nil))
-}
-
-func (b *binding) Runs(ctx context.Context, limit int) ([]schedulersdk.Run, error) {
+func (b *Service) Runs(ctx context.Context, limit int) ([]schedulersdk.Run, error) {
 	return b.runs.List(ctx, limit)
 }
-func (b *binding) Run(ctx context.Context, id string) (schedulersdk.Run, error) {
+func (b *Service) Run(ctx context.Context, id string) (schedulersdk.Run, error) {
 	return b.runs.Get(ctx, id)
 }
-func (b *binding) RetryRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+func (b *Service) RetryRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	return b.runs.Retry(ctx, id, reason)
 }
-func (b *binding) CancelRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+func (b *Service) CancelRun(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	return b.runs.Cancel(ctx, id, reason)
 }
-func (b *binding) DeadLetter(ctx context.Context, id string) (schedulersdk.DeadLetter, error) {
+func (b *Service) DeadLetter(ctx context.Context, id string) (schedulersdk.DeadLetter, error) {
 	return b.runs.DeadLetter(ctx, id)
 }
-func (b *binding) ResolveDeadLetter(ctx context.Context, id, reason string) (schedulersdk.DeadLetter, error) {
+func (b *Service) ResolveDeadLetter(ctx context.Context, id, reason string) (schedulersdk.DeadLetter, error) {
 	return b.runs.ResolveDeadLetter(ctx, id, reason)
 }
-func (b *binding) RequeueDeadLetter(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
+func (b *Service) RequeueDeadLetter(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	return b.runs.RequeueDeadLetter(ctx, id, reason)
 }
 
-func (b *binding) Start(ctx context.Context, config schedulersdk.WorkerConfig) <-chan struct{} {
+func (b *Service) Start(ctx context.Context, config schedulersdk.WorkerConfig) <-chan struct{} {
 	done := make(chan struct{})
 	config = schedulersdk.NormalizeWorkerConfig(config)
 	b.mu.Lock()
@@ -296,6 +288,6 @@ func (b *binding) Start(ctx context.Context, config schedulersdk.WorkerConfig) <
 	return done
 }
 
-func (b *binding) Close(context.Context) error { b.closeOnce.Do(b.cancel); return nil }
+func (b *Service) Close(context.Context) error { b.closeOnce.Do(b.cancel); return nil }
 
-var _ schedulersdk.Binding = (*binding)(nil)
+var _ schedulersdk.Binding = (*Service)(nil)

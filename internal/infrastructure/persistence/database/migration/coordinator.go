@@ -1,4 +1,4 @@
-package persistence
+package migration
 
 import (
 	"context"
@@ -6,23 +6,16 @@ import (
 
 	ormmigration "github.com/domainry/domainry-orm/migration"
 	"github.com/domainry/domainry-orm/sqlhost"
+	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
 
 // EnsureSchema applies Scheduler-owned migrations for a standalone SaaS
 // database. Embedded Module deployments instead hand SchemaMigrations to the
 // host ledger and never create this service-owned ledger.
-func EnsureSchema(ctx context.Context, database sqlhost.Database, driver, schema string) error {
-	renderer, err := Renderer(driver, schema)
-	if err != nil {
-		return err
-	}
+func EnsureSchema(ctx context.Context, database sqlhost.Database, renderer modulehost.Dialect, migrations []modulehost.SchemaMigration) error {
 	runner, err := ormmigration.NewRunner(database, renderer, ormmigration.Options{
 		InsertConflict: isMigrationConflict,
 	})
-	if err != nil {
-		return err
-	}
-	migrations, err := SchemaMigrations(driver, schema)
 	if err != nil {
 		return err
 	}
