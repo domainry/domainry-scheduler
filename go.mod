@@ -3,7 +3,7 @@ module github.com/domainry/domainry-scheduler
 go 1.26.0
 
 require (
-	github.com/domainry/domainry-foundation v0.1.0-dev.6
+	github.com/domainry/domainry-foundation v0.1.0-dev.7
 	github.com/domainry/domainry-orm v0.1.29
 	github.com/domainry/domainry-scheduler-sdk v0.1.1
 	github.com/go-sql-driver/mysql v1.10.0

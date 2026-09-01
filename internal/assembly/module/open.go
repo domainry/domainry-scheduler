@@ -10,6 +10,7 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulercapability "github.com/domainry/domainry-scheduler/capability"
 	httpexecutor "github.com/domainry/domainry-scheduler/internal/adapter/http"
 	application "github.com/domainry/domainry-scheduler/internal/application/scheduler"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
@@ -80,5 +81,10 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	ownerCtx, cancel := context.WithCancel(ctx)
 	definitions := schedulerstore.NewDefinitionStore(host.Database(), host.Dialect())
 	directHTTP := httpexecutor.New(host.HTTPConnections(), nil)
-	return application.NewService(ownerCtx, cancel, applicationRef, host, directHTTP, runs, definitions, mode), nil
+	capabilityBinding, err := schedulercapability.Open(schedulercapability.Inputs{})
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("build Scheduler capability disclosure: %w", err)
+	}
+	return application.NewService(ownerCtx, cancel, applicationRef, host, directHTTP, runs, definitions, mode, capabilityBinding), nil
 }

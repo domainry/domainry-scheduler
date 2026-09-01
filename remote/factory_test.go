@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/domainry/domainry-foundation/modulecapability"
+	"github.com/domainry/domainry-foundation/modulecapability/contracttest"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
@@ -31,6 +33,7 @@ func (hostStub) Dispatcher() modulehost.Dispatcher                  { return dis
 func (hostStub) HTTPConnections() modulehost.HTTPConnectionProvider { return nil }
 
 type transportStub struct {
+	modulecapability.Binding
 	snapshot schedulersdk.DefinitionSnapshot
 }
 
@@ -81,7 +84,11 @@ func (*transportStub) Close(context.Context, schedulersdk.ApplicationRef) error 
 
 func TestSaaSBindingPublishesRuntimeDefinitionSnapshot(t *testing.T) {
 	definition := schedulersdk.Definition{Key: "daily", Status: "enabled", Revision: "v1", Schedule: schedulersdk.Schedule{Type: "interval", IntervalSeconds: 60}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "workflow", Operation: "scheduled:daily"}}
-	transport := &transportStub{}
+	capability, err := contracttest.NewFixtureBinding("scheduler")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &transportStub{Binding: capability}
 	binding, err := NewFactory(transport).OpenSaaS(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, hostStub{definitions: definitionProvider{snapshot: schedulersdk.DefinitionSnapshot{Revision: 11, Definitions: []schedulersdk.Definition{definition}}}})
 	if err != nil {
 		t.Fatal(err)

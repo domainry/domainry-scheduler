@@ -63,7 +63,11 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /live", func(response http.ResponseWriter, _ *http.Request) { response.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /ready", func(response http.ResponseWriter, _ *http.Request) { response.WriteHeader(http.StatusNoContent) })
-	mux.Handle("/", saashttp.New(saashttp.Options{BearerToken: config.bearerToken, Service: service}))
+	schedulerHandler, err := saashttp.New(saashttp.Options{BearerToken: config.bearerToken, Service: service})
+	if err != nil {
+		return err
+	}
+	mux.Handle("/", schedulerHandler)
 	httpServer := &http.Server{
 		Addr: config.httpAddress, Handler: mux, ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,

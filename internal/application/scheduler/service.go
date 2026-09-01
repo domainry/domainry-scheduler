@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/domainry/domainry-foundation/modulecapability"
 	"github.com/domainry/domainry-foundation/worker"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
@@ -31,10 +32,34 @@ type Service struct {
 	leaseTTL             time.Duration
 	startOnce            sync.Once
 	closeOnce            sync.Once
+	capability           modulecapability.Binding
 }
 
-func NewService(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, directHTTP modulehost.Dispatcher, runs modulehost.RunStore, definitions schedulerpersistence.DefinitionRepository, mode schedulersdk.DeploymentMode) *Service {
-	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute}
+func NewService(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, directHTTP modulehost.Dispatcher, runs modulehost.RunStore, definitions schedulerpersistence.DefinitionRepository, mode schedulersdk.DeploymentMode, capabilities ...modulecapability.Binding) *Service {
+	var capability modulecapability.Binding
+	if len(capabilities) != 0 {
+		capability = capabilities[0]
+	}
+	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute, capability: capability}
+}
+
+func (b *Service) CapabilitySummary(ctx context.Context) (modulecapability.ModuleSummary, error) {
+	if b.capability == nil {
+		return modulecapability.ModuleSummary{}, fmt.Errorf("Scheduler capability binding is unavailable")
+	}
+	return b.capability.CapabilitySummary(ctx)
+}
+func (b *Service) CapabilityCategory(ctx context.Context, key string) (modulecapability.CategoryDocument, error) {
+	if b.capability == nil {
+		return modulecapability.CategoryDocument{}, fmt.Errorf("Scheduler capability binding is unavailable")
+	}
+	return b.capability.CapabilityCategory(ctx, key)
+}
+func (b *Service) ValidateCapabilityCandidate(ctx context.Context, request modulecapability.ValidationRequest) (modulecapability.ValidationResult, error) {
+	if b.capability == nil {
+		return modulecapability.ValidationResult{}, fmt.Errorf("Scheduler capability binding is unavailable")
+	}
+	return b.capability.ValidateCapabilityCandidate(ctx, request)
 }
 
 func (b *Service) Descriptor() schedulersdk.Descriptor {

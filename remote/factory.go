@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/domainry/domainry-foundation/modulecapability"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	"github.com/domainry/domainry-scheduler-sdk/saashost"
@@ -38,7 +39,7 @@ func (f Factory) OpenSaaS(ctx context.Context, application schedulersdk.Applicat
 	transport := f.transport
 	var err error
 	if transport == nil && f.httpConfig != nil {
-		transport, err = httptransport.New(*f.httpConfig)
+		transport, err = httptransport.Open(ctx, *f.httpConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -71,6 +72,15 @@ type binding struct {
 }
 
 func (b *binding) Descriptor() schedulersdk.Descriptor { return b.descriptor }
+func (b *binding) CapabilitySummary(ctx context.Context) (modulecapability.ModuleSummary, error) {
+	return b.transport.CapabilitySummary(ctx)
+}
+func (b *binding) CapabilityCategory(ctx context.Context, key string) (modulecapability.CategoryDocument, error) {
+	return b.transport.CapabilityCategory(ctx, key)
+}
+func (b *binding) ValidateCapabilityCandidate(ctx context.Context, request modulecapability.ValidationRequest) (modulecapability.ValidationResult, error) {
+	return b.transport.ValidateCapabilityCandidate(ctx, request)
+}
 func (b *binding) Reconcile(ctx context.Context) error {
 	snapshot, err := b.host.Definitions().Snapshot(ctx)
 	if err != nil {

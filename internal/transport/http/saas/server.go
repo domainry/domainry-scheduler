@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/domainry/domainry-foundation/modulecapability"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
+	capability "github.com/domainry/domainry-scheduler/internal/capability"
 )
 
 type Service interface {
@@ -35,12 +37,21 @@ type Options struct {
 }
 
 type Server struct {
-	token   string
-	service Service
+	token      string
+	service    Service
+	capability http.Handler
 }
 
-func New(options Options) *Server {
-	return &Server{token: strings.TrimSpace(options.BearerToken), service: options.Service}
+func New(options Options) (*Server, error) {
+	binding, err := capability.NewBinding()
+	if err != nil {
+		return nil, err
+	}
+	handler, err := modulecapability.NewHTTPHandler(binding, func(*http.Request) error { return nil })
+	if err != nil {
+		return nil, err
+	}
+	return &Server{token: strings.TrimSpace(options.BearerToken), service: options.Service, capability: handler}, nil
 }
 func (s *Server) Routes() http.Handler { return s }
 
@@ -51,6 +62,10 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	}
 	if s.token != "" && request.Header.Get("Authorization") != "Bearer "+s.token {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, modulecapability.HTTPPrefix) {
+		s.capability.ServeHTTP(response, request)
 		return
 	}
 	parts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
