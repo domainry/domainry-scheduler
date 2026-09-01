@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	actioncontract "github.com/domainry/domainry-foundation/action"
 	"github.com/domainry/domainry-foundation/modulecapability"
 	"github.com/domainry/domainry-foundation/modulehttp"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
@@ -23,7 +24,7 @@ func NewBinding() (*modulecapability.StaticBinding, error) {
 	groups := map[string][]modulehttp.Route{}
 	for _, route := range routes {
 		category := SchedulerOperationsCategory
-		if strings.HasPrefix(route.Pattern, "GET /tenant-admin/") || strings.HasPrefix(route.Pattern, "POST /tenant-admin/") {
+		if strings.Contains(route.Pattern(), " /tenant-admin/") {
 			category = SchedulerAuthoringCategory
 		}
 		groups[category] = append(groups[category], route)
@@ -216,15 +217,7 @@ func schedulerHTTPContract() ([]modulehttp.Route, map[string]map[string]any) {
 	contract := schedulersdk.SchedulerHTTPSurfaceContract()
 	routes := make([]modulehttp.Route, 0, len(contract.Routes))
 	for _, route := range contract.Routes {
-		exposures := make([]modulehttp.Exposure, len(route.Exposures))
-		for index, exposure := range route.Exposures {
-			exposures[index] = modulehttp.Exposure(exposure)
-		}
-		routes = append(routes, modulehttp.Route{
-			Pattern: route.Pattern, Exposures: exposures, Authentication: modulehttp.Authentication(route.Authentication), Permission: route.Permission,
-			AnyPermissions: append([]string(nil), route.AnyPermissions...), PrincipalOnly: route.PrincipalOnly,
-			Governance: &modulehttp.Governance{EffectClass: modulehttp.EffectClass(route.EffectClass), HighRiskPolicy: modulehttp.HighRiskPolicy(route.HighRiskPolicy), IdempotencyDecision: route.IdempotencyDecision, AuditClass: route.AuditClass},
-		})
+		routes = append(routes, modulehttp.Route{Action: route.Action})
 	}
 	return routes, contract.OpenAPI
 }
@@ -232,15 +225,10 @@ func schedulerHTTPContract() ([]modulehttp.Route, map[string]map[string]any) {
 func schedulerOperationOverrides(routes []modulehttp.Route) map[string]modulecapability.OperationExtension {
 	result := map[string]modulecapability.OperationExtension{}
 	for _, route := range routes {
-		if strings.HasSuffix(route.Pattern, "/simulate") {
-			result[route.Pattern] = modulecapability.OperationExtension{
-				Owner: "scheduler", Authorization: modulecapability.Authorization{Mode: modulecapability.AuthorizationDynamic, PolicyKey: "scheduler.definition.simulate", WorkspaceScope: "authenticated_workspace"},
-				Effect: modulecapability.EffectRead, Idempotency: modulecapability.Idempotency{Mode: "natural"},
-			}
-		}
-		if strings.HasPrefix(route.Pattern, "POST /operations/scheduler/") {
-			result[route.Pattern] = modulecapability.OperationExtension{
-				Owner: "scheduler", Authorization: modulecapability.Authorization{Mode: modulecapability.AuthorizationFixed, AnyOf: []string{"scheduler.command", "workspace.admin"}, WorkspaceScope: "authenticated_workspace"},
+		pattern := route.Pattern()
+		if strings.HasPrefix(pattern, "POST /operations/scheduler/") {
+			result[pattern] = modulecapability.OperationExtension{
+				Owner: "scheduler", Authorization: modulecapability.Authorization{Strategy: actioncontract.AuthorizationExactRolePermission, Permission: route.Action.Key, WorkspaceScope: "authenticated_workspace"},
 				Effect: modulecapability.EffectWrite, Idempotency: modulecapability.Idempotency{Mode: "caller_key_required", KeySource: "Idempotency-Key"},
 			}
 		}
