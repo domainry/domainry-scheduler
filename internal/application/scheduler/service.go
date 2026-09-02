@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	actioncontract "github.com/domainry/domainry-foundation/action"
 	"github.com/domainry/domainry-foundation/modulecapability"
 	"github.com/domainry/domainry-foundation/worker"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
@@ -64,6 +65,10 @@ func (b *Service) ValidateCapabilityCandidate(ctx context.Context, request modul
 
 func (b *Service) Descriptor() schedulersdk.Descriptor {
 	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: b.mode, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence"}}
+}
+
+func (*Service) AuthorizationActions() ([]actioncontract.ActionDefinition, error) {
+	return schedulersdk.SchedulerAuthorizationActions()
 }
 
 func (b *Service) Reconcile(ctx context.Context) error {
@@ -319,3 +324,4 @@ func (b *Service) Start(ctx context.Context, config schedulersdk.WorkerConfig) <
 func (b *Service) Close(context.Context) error { b.closeOnce.Do(b.cancel); return nil }
 
 var _ schedulersdk.Binding = (*Service)(nil)
+var _ actioncontract.Provider = (*Service)(nil)

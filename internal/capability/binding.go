@@ -15,19 +15,18 @@ import (
 )
 
 const (
-	SchedulerAuthoringCategory  = "scheduler.authoring"
-	SchedulerOperationsCategory = "scheduler.operations"
+	SchedulerAuthoringCategory  = schedulersdk.CapabilitySchedulerAuthoring
+	SchedulerOperationsCategory = schedulersdk.CapabilitySchedulerOperations
 )
 
 func NewBinding() (*modulecapability.StaticBinding, error) {
-	routes, operations := schedulerHTTPContract()
+	routes, operations, err := schedulerHTTPContract()
+	if err != nil {
+		return nil, err
+	}
 	groups := map[string][]modulehttp.Route{}
 	for _, route := range routes {
-		category := SchedulerOperationsCategory
-		if strings.Contains(route.Pattern(), " /tenant-admin/") {
-			category = SchedulerAuthoringCategory
-		}
-		groups[category] = append(groups[category], route)
+		groups[route.Action.CapabilityKey] = append(groups[route.Action.CapabilityKey], route)
 	}
 	overrides := schedulerOperationOverrides(routes)
 	definitions := []struct {
@@ -213,20 +212,27 @@ func invalidResult(rule, field string, params map[string]string, err error) modu
 	return modulecapability.ValidationResult{Diagnostics: []modulecapability.Diagnostic{{Owner: "scheduler", RuleKey: rule, Severity: modulecapability.SeverityError, FieldPath: field, Message: message, Params: params}}}
 }
 
-func schedulerHTTPContract() ([]modulehttp.Route, map[string]map[string]any) {
-	contract := schedulersdk.SchedulerHTTPSurfaceContract()
+func schedulerHTTPContract() ([]modulehttp.Route, map[string]map[string]any, error) {
+	contract, err := schedulersdk.SchedulerHTTPSurfaceContract()
+	if err != nil {
+		return nil, nil, err
+	}
 	routes := make([]modulehttp.Route, 0, len(contract.Routes))
 	for _, route := range contract.Routes {
-		routes = append(routes, modulehttp.Route{Action: route.Action})
+		projected, err := modulehttp.RouteFromAction(route.Action)
+		if err != nil {
+			return nil, nil, fmt.Errorf("project Scheduler Action %q: %w", route.Action.Key, err)
+		}
+		routes = append(routes, projected)
 	}
-	return routes, contract.OpenAPI
+	return routes, contract.OpenAPI, nil
 }
 
 func schedulerOperationOverrides(routes []modulehttp.Route) map[string]modulecapability.OperationExtension {
 	result := map[string]modulecapability.OperationExtension{}
 	for _, route := range routes {
 		pattern := route.Pattern()
-		if strings.HasPrefix(pattern, "POST /operations/scheduler/") {
+		if route.Action.CapabilityKey == SchedulerOperationsCategory && route.Action.EffectClass == actioncontract.EffectWrite {
 			result[pattern] = modulecapability.OperationExtension{
 				Owner: "scheduler", Authorization: modulecapability.Authorization{Strategy: actioncontract.AuthorizationExactRolePermission, Permission: route.Action.Key, WorkspaceScope: "authenticated_workspace"},
 				Effect: modulecapability.EffectWrite, Idempotency: modulecapability.Idempotency{Mode: "caller_key_required", KeySource: "Idempotency-Key"},
