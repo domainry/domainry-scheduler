@@ -234,7 +234,7 @@ func schedulerOperationOverrides(routes []modulehttp.Route) map[string]modulecap
 		pattern := route.Pattern()
 		if route.Action.CapabilityKey == SchedulerOperationsCategory && route.Action.EffectClass == actioncontract.EffectWrite {
 			result[pattern] = modulecapability.OperationExtension{
-				Owner: "scheduler", Authorization: modulecapability.Authorization{Strategy: actioncontract.AuthorizationExactRolePermission, Permission: route.Action.Key, WorkspaceScope: "authenticated_workspace"},
+				Owner: "scheduler", Authorization: modulecapability.Authorization{Strategy: actioncontract.AuthorizationAuthenticated, Permission: route.Action.Key, WorkspaceScope: "authenticated_workspace"},
 				Effect: modulecapability.EffectWrite, Idempotency: modulecapability.Idempotency{Mode: "caller_key_required", KeySource: "Idempotency-Key"},
 			}
 		}
