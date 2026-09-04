@@ -7,8 +7,56 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulermodel "github.com/domainry/domainry-scheduler/internal/domain/scheduler/model"
 	_ "modernc.org/sqlite"
 )
+
+func TestCommandReceiptClaimIsDurableAndRuntimeScoped(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:scheduler-command-receipt?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
+		t.Fatal(err)
+	}
+	dialect, err := Renderer("sqlite", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := NewCommandReceiptStore(db, dialect, "runtime-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewCommandReceiptStore(db, dialect, "runtime-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := schedulermodel.CommandReceipt{IdempotencyKey: "run-01", ActionKey: "scheduler.definitions.run", ResourceKey: "/scheduler/definitions/daily/run", RequestHash: "hash-a"}
+	receipt, claimed, err := first.ClaimCommand(t.Context(), claim)
+	if err != nil || !claimed || receipt.Status != schedulermodel.CommandReceiptExecuting {
+		t.Fatalf("first claim=%+v claimed=%t err=%v", receipt, claimed, err)
+	}
+	receipt, claimed, err = second.ClaimCommand(t.Context(), claim)
+	if err != nil || claimed || receipt.Status != schedulermodel.CommandReceiptExecuting {
+		t.Fatalf("concurrent claim=%+v claimed=%t err=%v", receipt, claimed, err)
+	}
+	response := []byte(`{"id":"run-1","status":"succeeded"}`)
+	if err := first.CompleteCommand(t.Context(), claim.IdempotencyKey, claim.RequestHash, 200, response); err != nil {
+		t.Fatal(err)
+	}
+	receipt, claimed, err = second.ClaimCommand(t.Context(), claim)
+	if err != nil || claimed || receipt.Status != schedulermodel.CommandReceiptCompleted || receipt.HTTPStatus != 200 || string(receipt.ResponseJSON) != string(response) {
+		t.Fatalf("replay=%+v claimed=%t err=%v", receipt, claimed, err)
+	}
+	otherRuntime, err := NewCommandReceiptStore(db, dialect, "runtime-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := otherRuntime.ClaimCommand(t.Context(), claim); err != nil || !claimed {
+		t.Fatalf("other runtime claimed=%t err=%v", claimed, err)
+	}
+}
 
 func TestDatabaseClaimRunsOnOnlyOneMachine(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:scheduler-claim?mode=memory&cache=shared")
@@ -84,7 +132,7 @@ func TestStandaloneSchemaMigrationIsIdempotent(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM "_schema_migrations" WHERE "dirty" = FALSE`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 {
+	if count != 3 {
 		t.Fatalf("applied migrations=%d", count)
 	}
 	var definitions int

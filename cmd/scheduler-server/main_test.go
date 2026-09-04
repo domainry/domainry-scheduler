@@ -11,7 +11,7 @@ func TestConfigurationFromEnvironmentBuildsSQLiteDefaults(t *testing.T) {
 	t.Setenv("SCHEDULER_WORKER_ID", "worker-a")
 	t.Setenv("SCHEDULER_SAAS_TOKEN", "control-token")
 	t.Setenv("SCHEDULER_RUNTIME_ENDPOINT", "https://runtime.example")
-	t.Setenv("SCHEDULER_RUNTIME_SERVICE_CREDENTIAL", "runtime-token")
+	t.Setenv("SCHEDULER_RUNTIME_SIGNING_SECRET", "runtime-signing-secret")
 	config, err := configurationFromEnvironment()
 	if err != nil {
 		t.Fatal(err)
@@ -27,7 +27,7 @@ func TestConfigurationFromEnvironmentRejectsIncompleteProductionConfig(t *testin
 	t.Setenv("SCHEDULER_WORKER_ID", "")
 	t.Setenv("SCHEDULER_SAAS_TOKEN", "")
 	t.Setenv("SCHEDULER_RUNTIME_ENDPOINT", "")
-	t.Setenv("SCHEDULER_RUNTIME_SERVICE_CREDENTIAL", "")
+	t.Setenv("SCHEDULER_RUNTIME_SIGNING_SECRET", "")
 	_, err := configurationFromEnvironment()
 	if err == nil || !strings.Contains(err.Error(), "configuration are required") {
 		t.Fatalf("err=%v", err)

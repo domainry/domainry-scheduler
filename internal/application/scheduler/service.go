@@ -11,6 +11,7 @@ import (
 
 	actioncontract "github.com/domainry/domainry-foundation/action"
 	"github.com/domainry/domainry-foundation/modulecapability"
+	"github.com/domainry/domainry-foundation/modulehttp"
 	"github.com/domainry/domainry-foundation/worker"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
@@ -34,6 +35,7 @@ type Service struct {
 	startOnce            sync.Once
 	closeOnce            sync.Once
 	capability           modulecapability.Binding
+	httpAdapters         []modulehttp.Adapter
 }
 
 func NewService(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, directHTTP modulehost.Dispatcher, runs modulehost.RunStore, definitions schedulerpersistence.DefinitionRepository, mode schedulersdk.DeploymentMode, capabilities ...modulecapability.Binding) *Service {
@@ -69,6 +71,14 @@ func (b *Service) Descriptor() schedulersdk.Descriptor {
 
 func (*Service) AuthorizationActions() ([]actioncontract.ActionDefinition, error) {
 	return schedulersdk.SchedulerAuthorizationActions()
+}
+
+func (b *Service) SetHTTPAdapters(adapters []modulehttp.Adapter) {
+	b.httpAdapters = append([]modulehttp.Adapter(nil), adapters...)
+}
+
+func (b *Service) HTTPAdapters() []modulehttp.Adapter {
+	return append([]modulehttp.Adapter(nil), b.httpAdapters...)
 }
 
 func (b *Service) Reconcile(ctx context.Context) error {
@@ -325,3 +335,4 @@ func (b *Service) Close(context.Context) error { b.closeOnce.Do(b.cancel); retur
 
 var _ schedulersdk.Binding = (*Service)(nil)
 var _ actioncontract.Provider = (*Service)(nil)
+var _ modulehttp.Provider = (*Service)(nil)

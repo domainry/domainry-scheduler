@@ -45,7 +45,7 @@ func run() error {
 	}
 	defer database.Close()
 	gateway, err := dispatchgateway.NewRemote(dispatchgateway.RemoteConfig{
-		BaseURL: config.runtimeEndpoint, ServiceCredential: config.runtimeCredential,
+		BaseURL: config.runtimeEndpoint, SigningSecret: config.runtimeSigningSecret,
 		RequestTimeout: config.gatewayTimeout, MaxAttempts: config.gatewayAttempts,
 	})
 	if err != nil {
@@ -89,7 +89,7 @@ func run() error {
 
 type configuration struct {
 	httpAddress, sqlDriver, storeDriver, databaseDSN, databaseSchema string
-	workerID, bearerToken, runtimeEndpoint, runtimeCredential        string
+	workerID, bearerToken, runtimeEndpoint, runtimeSigningSecret     string
 	databaseMaxOpen, databaseMaxIdle, workerBatchSize                int
 	databaseConnLifetime, databaseLockTimeout, workerPollInterval    time.Duration
 	gatewayTimeout                                                   time.Duration
@@ -101,7 +101,7 @@ func configurationFromEnvironment() (configuration, error) {
 		httpAddress: env("SCHEDULER_HTTP_ADDRESS", ":8080"),
 		databaseDSN: strings.TrimSpace(os.Getenv("SCHEDULER_DATABASE_DSN")), databaseSchema: strings.TrimSpace(os.Getenv("SCHEDULER_DATABASE_SCHEMA")),
 		workerID: strings.TrimSpace(os.Getenv("SCHEDULER_WORKER_ID")), bearerToken: strings.TrimSpace(os.Getenv("SCHEDULER_SAAS_TOKEN")),
-		runtimeEndpoint: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_ENDPOINT")), runtimeCredential: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_SERVICE_CREDENTIAL")),
+		runtimeEndpoint: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_ENDPOINT")), runtimeSigningSecret: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_SIGNING_SECRET")),
 		databaseMaxOpen: 20, databaseMaxIdle: 10, databaseConnLifetime: 30 * time.Minute, databaseLockTimeout: 5 * time.Second,
 		workerPollInterval: time.Second, workerBatchSize: 100, gatewayTimeout: 10 * time.Second, gatewayAttempts: 3,
 	}
@@ -125,7 +125,7 @@ func configurationFromEnvironment() (configuration, error) {
 		}
 		value.workerBatchSize = parsed
 	}
-	if value.databaseDSN == "" || value.workerID == "" || value.bearerToken == "" || value.runtimeEndpoint == "" || value.runtimeCredential == "" {
+	if value.databaseDSN == "" || value.workerID == "" || value.bearerToken == "" || value.runtimeEndpoint == "" || value.runtimeSigningSecret == "" {
 		return configuration{}, fmt.Errorf("Scheduler SaaS database, worker, bearer token and Runtime callback configuration are required")
 	}
 	return value, nil

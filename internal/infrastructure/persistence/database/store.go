@@ -15,6 +15,7 @@ import (
 
 type Store = schedulerstore.Store
 type DefinitionStore = schedulerstore.DefinitionStore
+type CommandReceiptStore = schedulerstore.CommandReceiptStore
 
 func NewStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect, runtimeID, workerID string) (*Store, error) {
 	return schedulerstore.New(database, dialect, runtimeID, workerID)
@@ -22,6 +23,10 @@ func NewStore(database schedulermodulehost.Database, dialect schedulermodulehost
 
 func NewDefinitionStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect) DefinitionStore {
 	return schedulerstore.NewDefinitionStore(database, dialect)
+}
+
+func NewCommandReceiptStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect, runtimeID string) (*CommandReceiptStore, error) {
+	return schedulerstore.NewCommandReceiptStore(database, dialect, runtimeID)
 }
 
 func SchemaMigrations(driver, schema string) ([]schedulermodulehost.SchemaMigration, error) {

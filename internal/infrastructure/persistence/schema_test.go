@@ -15,7 +15,7 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(migrations) != 2 || len(migrations[0].Statements) != 4 || len(migrations[1].Statements) != 1 {
+			if len(migrations) != 3 || len(migrations[0].Statements) != 4 || len(migrations[1].Statements) != 1 || len(migrations[2].Statements) != 1 {
 				t.Fatalf("unexpected migration inventory: %#v", migrations)
 			}
 			for _, migration := range migrations {
@@ -27,6 +27,9 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			}
 			if !strings.Contains(migrations[1].Statements[0], "_scheduler_definitions") {
 				t.Fatalf("Scheduler definition table is not source-owned: %q", migrations[1].Statements[0])
+			}
+			if !strings.Contains(migrations[2].Statements[0], "_scheduler_command_receipts") {
+				t.Fatalf("Scheduler command receipt table is not source-owned: %q", migrations[2].Statements[0])
 			}
 		})
 	}

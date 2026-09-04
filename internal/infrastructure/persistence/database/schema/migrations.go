@@ -8,7 +8,7 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
 
-const SchemaVersion uint = 2
+const SchemaVersion uint = 3
 
 type Migration = ormmigration.Migration
 
@@ -62,9 +62,14 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build Scheduler definition table: %w", err)
 	}
+	commandReceiptStatement, _, err := commandReceiptTable(r).Build()
+	if err != nil {
+		return nil, fmt.Errorf("build Scheduler command receipt table: %w", err)
+	}
 	return []modulehost.SchemaMigration{
 		{Version: 1, Name: "scheduler_foundation", Statements: statements},
 		{Version: 2, Name: "scheduler_definition_ownership", Statements: []string{definitionStatement}},
+		{Version: 3, Name: "scheduler_command_idempotency", Statements: []string{commandReceiptStatement}},
 	}, nil
 }
 
@@ -86,6 +91,21 @@ func definitionTable(r modulehost.Dialect) *ormschema.TableBuilder {
 		required("created_at", ormschema.TextKey(255)),
 		required("updated_at", ormschema.TextKey(255)),
 	).PrimaryKey("id").Unique("resource_key")
+}
+
+func commandReceiptTable(r modulehost.Dialect) *ormschema.TableBuilder {
+	return ormschema.NewTable(r, "_scheduler_command_receipts").IfNotExists().Columns(
+		required("runtime_id", ormschema.TextKey(191)),
+		required("idempotency_key", ormschema.TextKey(191)),
+		required("action_key", ormschema.TextKey(191)),
+		required("resource_key", ormschema.TextKey(255)),
+		required("request_hash", ormschema.TextKey(64)),
+		required("status", ormschema.TextKey(32)),
+		required("http_status", ormschema.BigInt()),
+		optional("response_json", ormschema.LongText()),
+		required("created_at", ormschema.TextKey(40)),
+		required("updated_at", ormschema.TextKey(40)),
+	).PrimaryKey("runtime_id", "idempotency_key")
 }
 
 func required(name string, kind ormschema.ColumnType) ormschema.ColumnDefinition {

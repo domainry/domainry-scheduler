@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"strings"
 
+	foundationhttp "github.com/domainry/domainry-foundation/modulehttp"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulercapability "github.com/domainry/domainry-scheduler/capability"
 	httpexecutor "github.com/domainry/domainry-scheduler/internal/adapter/http"
 	application "github.com/domainry/domainry-scheduler/internal/application/scheduler"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
+	modulehttp "github.com/domainry/domainry-scheduler/internal/transport/http/module"
 )
 
 // SaaSHost provides service-owned persistence plus application-specific
@@ -78,6 +80,10 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	if err != nil {
 		return nil, err
 	}
+	commandReceipts, err := schedulerstore.NewCommandReceiptStore(host.Database(), host.Dialect(), applicationRef.RuntimeID)
+	if err != nil {
+		return nil, err
+	}
 	ownerCtx, cancel := context.WithCancel(ctx)
 	definitions := schedulerstore.NewDefinitionStore(host.Database(), host.Dialect())
 	directHTTP := httpexecutor.New(host.HTTPConnections(), nil)
@@ -86,5 +92,14 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 		cancel()
 		return nil, fmt.Errorf("build Scheduler capability disclosure: %w", err)
 	}
-	return application.NewService(ownerCtx, cancel, applicationRef, host, directHTTP, runs, definitions, mode, capabilityBinding), nil
+	service := application.NewService(ownerCtx, cancel, applicationRef, host, directHTTP, runs, definitions, mode, capabilityBinding)
+	if mode == schedulersdk.DeploymentModeModule {
+		adapter, err := modulehttp.NewAdapter(service, commandReceipts)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("build Scheduler Module HTTP adapter: %w", err)
+		}
+		service.SetHTTPAdapters([]foundationhttp.Adapter{adapter})
+	}
+	return service, nil
 }
