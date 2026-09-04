@@ -213,7 +213,7 @@ func invalidResult(rule, field string, params map[string]string, err error) modu
 }
 
 func schedulerHTTPContract() ([]modulehttp.Route, map[string]map[string]any, error) {
-	contract, err := schedulersdk.SchedulerHTTPSurfaceContract()
+	contract, err := schedulersdk.SchedulerHTTPAdapterContract()
 	if err != nil {
 		return nil, nil, err
 	}
