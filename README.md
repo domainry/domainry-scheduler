@@ -26,7 +26,7 @@ For a single-Runtime Scheduler SaaS process, the callback gateway can be
 configured with:
 
 - `SCHEDULER_RUNTIME_ENDPOINT`
-- `SCHEDULER_RUNTIME_SERVICE_CREDENTIAL`
+- `SCHEDULER_RUNTIME_SIGNING_SECRET` (same secret configured as Runtime `INTEGRATION_SECRET_KEY`)
 
 The standalone service composition is internal to the executable:
 
@@ -64,7 +64,6 @@ business records.
 ## Repository layout
 
 ```text
-admin/                                  Scheduler target-editor npm package
 cmd/
   scheduler-server/                     standalone Scheduler SaaS executable
 internal/
