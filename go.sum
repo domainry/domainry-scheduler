@@ -5,8 +5,7 @@ github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XL
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/domainry/domainry-foundation v0.1.0-dev.6 h1:V5s/3IRGb0PFBZgqlX8Rb3vKModUATIGDgzC9rEqF9A=
-github.com/domainry/domainry-foundation v0.1.0-dev.6/go.mod h1:+BYiJIIQbc1Z9Xfmo7EQCkfcB8uNV6Fcd+RHFigAW4o=
+github.com/domainry/domainry-foundation v0.1.0-dev.7 h1:RCHmQ9UmP0hzgztMoYh29eUvEhio96acfFL/MpDEU6A=
 github.com/domainry/domainry-orm v0.1.29 h1:cJLNjxCDmqQfY3//5l25T51tbrPUw30cO3aandF5VCw=
 github.com/domainry/domainry-orm v0.1.29/go.mod h1:NKMojLuridkYCS4i5L7BO7LMTMsf/uOkWQ9OQ+9Vdn4=
 github.com/domainry/domainry-scheduler-sdk v0.1.1 h1:AhnZr0sqUDD9ZnrBMIZx0yVSBmiEawKv5/WNOIrNlgg=
