@@ -1,0 +1,223 @@
+{
+  "key": "scheduler.business_job",
+  "status": "supported",
+  "lifecycle": "domain_blueprint_source_fragment",
+  "examples": [
+    {
+      "name": "minimal_valid",
+      "value": {
+        "key": "daily_operations_snapshot",
+        "max_attempts": 1,
+        "missed_window_policy": "skip",
+        "schedule": {
+          "time_of_day": "02:00",
+          "timezone": "UTC"
+        },
+        "status": "enabled",
+        "target_key": "orders.daily",
+        "target_type": "report_snapshot_refresh",
+        "timeout_seconds": 300
+      }
+    },
+    {
+      "name": "representative",
+      "value": {
+        "key": "order_approval_scan",
+        "max_attempts": 3,
+        "max_catchup_windows": 3,
+        "missed_window_policy": "catch_up_bounded",
+        "schedule": {
+          "expression": "*/15 * * * *",
+          "timezone": "Asia/Shanghai"
+        },
+        "status": "enabled",
+        "target_key": "order.approval",
+        "target_type": "workflow",
+        "timeout_seconds": 1800
+      }
+    }
+  ],
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "i18n": {
+        "type": "object"
+      },
+      "key": {
+        "type": "string"
+      },
+      "max_attempts": {
+        "type": "integer",
+        "default": 1,
+        "minimum": 1,
+        "maximum": 100
+      },
+      "max_catchup_windows": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "missed_window_policy": {
+        "type": "string",
+        "enum": [
+          "catch_up_bounded",
+          "catch_up_one",
+          "skip"
+        ],
+        "default": "skip"
+      },
+      "name": {
+        "type": "string"
+      },
+      "schedule": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "expression": {
+                "type": "string"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "interval_seconds": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "interval_seconds"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "time_of_day": {
+                "type": "string"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "time_of_day"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "day_of_week": {
+                "type": "string",
+                "enum": [
+                  "friday",
+                  "monday",
+                  "saturday",
+                  "sunday",
+                  "thursday",
+                  "tuesday",
+                  "wednesday"
+                ]
+              },
+              "time_of_day": {
+                "type": "string"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "time_of_day",
+              "day_of_week"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "day_of_month": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 31
+              },
+              "time_of_day": {
+                "type": "string"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "time_of_day",
+              "day_of_month"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "enabled",
+          "paused",
+          "disabled"
+        ],
+        "default": "draft"
+      },
+      "target_key": {
+        "type": "string"
+      },
+      "target_type": {
+        "type": "string",
+        "enum": [
+          "workflow",
+          "report_snapshot_refresh"
+        ]
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "default": 300,
+        "minimum": 1,
+        "maximum": 86400
+      }
+    },
+    "required": [
+      "key",
+      "status",
+      "target_type",
+      "target_key",
+      "schedule",
+      "missed_window_policy",
+      "max_attempts",
+      "timeout_seconds"
+    ],
+    "additionalProperties": false
+  },
+  "reference_contracts": [
+    {
+      "kind": "scheduler_target_key",
+      "input_json_pointer": "/target_key",
+      "scope_from": "/target_type",
+      "resolver_endpoint": "/discovery/references/scheduler_target_key"
+    }
+  ],
+  "sources": [
+    {
+      "kind": "owner_module",
+      "path": "github.com/domainry/domainry-scheduler/internal/capability",
+      "symbol": "scheduledJobSource"
+    }
+  ]
+}

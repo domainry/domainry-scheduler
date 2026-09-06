@@ -10,7 +10,6 @@ import (
 	"github.com/domainry/domainry-foundation/modulecapability"
 	"github.com/domainry/domainry-foundation/modulehttp"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
-	"github.com/domainry/domainry-scheduler-sdk/authoring"
 	"github.com/domainry/domainry-scheduler-sdk/schedule"
 )
 
@@ -52,13 +51,15 @@ func NewBinding() (*modulecapability.StaticBinding, error) {
 			document.ValidationContracts = []modulecapability.ValidationScopeContract{{
 				Kind: "scheduler.definition", Description: "Validate one complete scheduled job definition, including its nested schedule.", Coverage: modulecapability.ValidationCoverageAllCandidates, CandidateCollections: []string{"scheduled_jobs"},
 			}}
-			for _, value := range authoring.Domain().Capabilities {
-				payload, marshalErr := json.Marshal(value)
-				if marshalErr != nil {
-					return nil, marshalErr
-				}
-				document.Projections = append(document.Projections, modulecapability.SourceProjection{Kind: "scheduler.authoring_capability", Key: value.Key, Payload: payload})
+			value, sourceErr := schedulerBlueprintSourceCapability()
+			if sourceErr != nil {
+				return nil, sourceErr
 			}
+			payload, marshalErr := json.Marshal(value)
+			if marshalErr != nil {
+				return nil, marshalErr
+			}
+			document.Projections = append(document.Projections, modulecapability.SourceProjection{Kind: schedulerBlueprintSourceProjectionKind, Key: value.Key, Payload: payload})
 		}
 		documents = append(documents, document)
 	}
@@ -97,13 +98,17 @@ func ValidateCandidate(ctx context.Context, request modulecapability.ValidationR
 		if candidate.Key != request.Candidate.Key {
 			return invalidResult("scheduler.key_mismatch", "$.candidate.value.key", map[string]string{"expected": request.Candidate.Key, "actual": candidate.Key}, fmt.Errorf("scheduled job key differs from fragment key")), nil
 		}
-		if strings.TrimSpace(candidate.Name) == "" {
-			return invalidResult("scheduler.name_required", "$.candidate.value.name", nil, fmt.Errorf("scheduled job name is required")), nil
-		}
 		if !validScheduledJobStatus(candidate.Status) {
 			return invalidResult("scheduler.status_invalid", "$.candidate.value.status", map[string]string{"allowed": "disabled,draft,enabled,paused", "actual": candidate.Status}, fmt.Errorf("scheduled job status is invalid")), nil
 		}
-		err = schedule.ValidateDefinitionData(ctx, candidate.runtimeData())
+		scheduleType, inferErr := candidate.Schedule.inferredType()
+		if inferErr != nil {
+			return invalidResult("scheduler.schedule_shape_invalid", "$.candidate.value.schedule", nil, inferErr), nil
+		}
+		if candidate.Schedule.Type != "" && candidate.Schedule.Type != scheduleType {
+			return invalidResult("scheduler.schedule_type_derived_mismatch", "$.candidate.value.schedule.type", map[string]string{"expected": scheduleType, "actual": candidate.Schedule.Type}, fmt.Errorf("schedule type must match the compiler-derived source shape")), nil
+		}
+		err = schedule.ValidateDefinitionData(ctx, candidate.runtimeData(scheduleType))
 	default:
 		return modulecapability.ValidationResult{}, &modulecapability.Error{StatusCode: 400, Code: "module_capability.validation_scope_invalid"}
 	}
@@ -137,16 +142,42 @@ type scheduledJobSource struct {
 }
 
 type scheduledJobScheduleSource struct {
-	Type            string `json:"type"`
+	// Type is accepted only on Plane-normalized candidates and must equal the
+	// shape-derived value. It is intentionally absent from the model-facing
+	// source projection and source examples.
+	Type            string `json:"type,omitempty"`
 	Expression      string `json:"expression,omitempty"`
-	IntervalSeconds int    `json:"interval_seconds,omitempty"`
+	IntervalSeconds *int   `json:"interval_seconds,omitempty"`
 	TimeOfDay       string `json:"time_of_day,omitempty"`
 	DayOfWeek       string `json:"day_of_week,omitempty"`
-	DayOfMonth      int    `json:"day_of_month,omitempty"`
+	DayOfMonth      *int   `json:"day_of_month,omitempty"`
 	Timezone        string `json:"timezone,omitempty"`
 }
 
-func (value scheduledJobSource) runtimeData() map[string]any {
+func (value scheduledJobScheduleSource) inferredType() (string, error) {
+	expression := strings.TrimSpace(value.Expression) != ""
+	interval := value.IntervalSeconds != nil
+	timeOfDay := strings.TrimSpace(value.TimeOfDay) != ""
+	dayOfWeek := strings.TrimSpace(value.DayOfWeek) != ""
+	dayOfMonth := value.DayOfMonth != nil
+	timezone := strings.TrimSpace(value.Timezone) != ""
+	switch {
+	case expression && !interval && !timeOfDay && !dayOfWeek && !dayOfMonth:
+		return "cron", nil
+	case interval && !expression && !timeOfDay && !dayOfWeek && !dayOfMonth && !timezone:
+		return "interval", nil
+	case timeOfDay && !expression && !interval && !dayOfWeek && !dayOfMonth:
+		return "daily_at", nil
+	case timeOfDay && dayOfWeek && !expression && !interval && !dayOfMonth:
+		return "weekly_at", nil
+	case timeOfDay && dayOfMonth && !expression && !interval && !dayOfWeek:
+		return "monthly_at", nil
+	default:
+		return "", fmt.Errorf("schedule must identify exactly one cron, interval, daily, weekly, or monthly source shape")
+	}
+}
+
+func (value scheduledJobSource) runtimeData(scheduleType string) map[string]any {
 	targetKey := strings.TrimSpace(value.TargetKey)
 	if value.TargetType == "workflow" {
 		targetKey = "scheduled:" + targetKey
@@ -154,7 +185,7 @@ func (value scheduledJobSource) runtimeData() map[string]any {
 	result := map[string]any{
 		"key": value.Key, "name": value.Name, "status": value.Status,
 		"target_type": value.TargetType, "target_key": targetKey,
-		"schedule_type":        value.Schedule.Type,
+		"schedule_type":        scheduleType,
 		"missed_window_policy": value.MissedWindowPolicy,
 		"max_attempts":         value.MaxAttempts, "timeout_seconds": value.TimeoutSeconds,
 	}
@@ -164,8 +195,8 @@ func (value scheduledJobSource) runtimeData() map[string]any {
 	if value.Schedule.Expression != "" {
 		result["schedule_expression"] = value.Schedule.Expression
 	}
-	if value.Schedule.IntervalSeconds != 0 {
-		result["interval_seconds"] = value.Schedule.IntervalSeconds
+	if value.Schedule.IntervalSeconds != nil {
+		result["interval_seconds"] = *value.Schedule.IntervalSeconds
 	}
 	if value.Schedule.TimeOfDay != "" {
 		result["time_of_day"] = value.Schedule.TimeOfDay
@@ -173,8 +204,8 @@ func (value scheduledJobSource) runtimeData() map[string]any {
 	if value.Schedule.DayOfWeek != "" {
 		result["day_of_week"] = value.Schedule.DayOfWeek
 	}
-	if value.Schedule.DayOfMonth != 0 {
-		result["day_of_month"] = value.Schedule.DayOfMonth
+	if value.Schedule.DayOfMonth != nil {
+		result["day_of_month"] = *value.Schedule.DayOfMonth
 	}
 	if value.Schedule.Timezone != "" {
 		result["timezone"] = value.Schedule.Timezone
