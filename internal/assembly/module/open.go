@@ -80,12 +80,11 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	if err != nil {
 		return nil, err
 	}
-	commandReceipts, err := schedulerstore.NewCommandReceiptStore(host.Database(), host.Dialect(), applicationRef.RuntimeID)
+	definitions, err := schedulerstore.NewDefinitionStore(host.Database(), host.Dialect(), applicationRef.RuntimeID, mode)
 	if err != nil {
 		return nil, err
 	}
 	ownerCtx, cancel := context.WithCancel(ctx)
-	definitions := schedulerstore.NewDefinitionStore(host.Database(), host.Dialect())
 	directHTTP := httpexecutor.New(host.HTTPConnections(), nil)
 	capabilityBinding, err := schedulercapability.Open(schedulercapability.Inputs{})
 	if err != nil {
@@ -94,6 +93,11 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	}
 	service := application.NewService(ownerCtx, cancel, applicationRef, host, directHTTP, runs, definitions, mode, capabilityBinding)
 	if mode == schedulersdk.DeploymentModeModule {
+		commandReceipts, err := schedulerstore.NewCommandReceiptStore(host.Database(), host.Dialect(), applicationRef.RuntimeID)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
 		adapter, err := modulehttp.NewAdapter(service, commandReceipts)
 		if err != nil {
 			cancel()

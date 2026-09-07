@@ -223,6 +223,23 @@ func TestAdapterDurablyReplaysSchedulerCommandsAndRejectsKeyReuse(t *testing.T) 
 	}
 }
 
+func TestAdapterTreatsUnknownLengthEmptyBodyAsOrdinaryProductionRun(t *testing.T) {
+	binding := schedulerBindingFixture()
+	value, err := NewAdapter(binding, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/scheduler/definitions/daily/run", strings.NewReader(""))
+	request.ContentLength = -1
+	request.Header.Set("X-Operation-Reason", "operator requested")
+	request.Header.Set("Idempotency-Key", "manual-empty-body-01")
+	response := httptest.NewRecorder()
+	value.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || binding.triggerCalls != 1 {
+		t.Fatalf("status=%d body=%s calls=%d", response.Code, response.Body.String(), binding.triggerCalls)
+	}
+}
+
 func schedulerBindingFixture() *bindingStub {
 	now := time.Date(2026, 9, 5, 8, 0, 0, 0, time.UTC)
 	definition := schedulersdk.Definition{Key: "daily", Name: "Daily review", Status: "enabled", Revision: "v1", Schedule: schedulersdk.Schedule{Type: "cron", Expression: "0 9 * * *", Timezone: "Asia/Shanghai"}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "workflow", Operation: "scheduled:daily"}, Policy: schedulersdk.Policy{MaxAttempts: 3}}

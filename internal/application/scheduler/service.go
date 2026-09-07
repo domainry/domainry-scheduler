@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	actioncontract "github.com/domainry/domainry-foundation/action"
@@ -30,15 +31,28 @@ type Service struct {
 	ctx                  context.Context
 	cancel               context.CancelFunc
 	mu                   sync.RWMutex
+	reconcileMu          sync.Mutex
+	reconcileGeneration  atomic.Uint64
 	definitions          map[string]schedulersdk.Definition
 	leaseTTL             time.Duration
-	startOnce            sync.Once
-	closeOnce            sync.Once
+	lifecycleMu          sync.Mutex
+	workerDone           chan struct{}
+	closed               bool
 	capability           modulecapability.Binding
 	httpAdapters         []modulehttp.Adapter
 }
 
+type fencedDefinitionSnapshotProjector interface {
+	ApplyDefinitionSnapshot(context.Context, schedulerpersistence.DefinitionSnapshot, time.Time) (bool, error)
+}
+
 func NewService(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, directHTTP modulehost.Dispatcher, runs modulehost.RunStore, definitions schedulerpersistence.DefinitionRepository, mode schedulersdk.DeploymentMode, capabilities ...modulecapability.Binding) *Service {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if cancel == nil {
+		ctx, cancel = context.WithCancel(ctx)
+	}
 	var capability modulecapability.Binding
 	if len(capabilities) != 0 {
 		capability = capabilities[0]
@@ -66,7 +80,11 @@ func (b *Service) ValidateCapabilityCandidate(ctx context.Context, request modul
 }
 
 func (b *Service) Descriptor() schedulersdk.Descriptor {
-	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: b.mode, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence"}}
+	capabilities := []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence"}
+	if b.mode == schedulersdk.DeploymentModeSaaS {
+		capabilities = append(capabilities, schedulersdk.CapabilityDefinitionPublicationFencing)
+	}
+	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: b.mode, Capabilities: capabilities}
 }
 
 func (*Service) AuthorizationActions() ([]actioncontract.ActionDefinition, error) {
@@ -82,27 +100,48 @@ func (b *Service) HTTPAdapters() []modulehttp.Adapter {
 }
 
 func (b *Service) Reconcile(ctx context.Context) error {
+	generation := b.reconcileGeneration.Add(1)
+	b.reconcileMu.Lock()
+	defer b.reconcileMu.Unlock()
+	if generation != b.reconcileGeneration.Load() {
+		return nil
+	}
 	snapshot, err := b.host.Definitions().Snapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("read Scheduler definitions: %w", err)
 	}
+	return b.reconcileSnapshot(ctx, snapshot)
+}
+
+// ReconcileSnapshot lets the SaaS protocol synchronize the immutable request
+// snapshot directly instead of publishing it through a mutable host slot. The
+// generation is claimed before waiting on the serialization lock, so an older
+// invocation can never run after a newer one has begun.
+func (b *Service) ReconcileSnapshot(ctx context.Context, snapshot schedulersdk.DefinitionSnapshot) error {
+	b.reconcileMu.Lock()
+	defer b.reconcileMu.Unlock()
+	return b.reconcileSnapshot(ctx, snapshot)
+}
+
+// HydrateDefinitions restores one previously published, application-scoped
+// snapshot without consulting the mutable host provider or writing definition
+// rows. The boolean is false only when this application has never published a
+// durable snapshot, including the valid case of a published empty snapshot.
+func (b *Service) HydrateDefinitions(ctx context.Context) (bool, error) {
+	generation := b.reconcileGeneration.Add(1)
+	b.reconcileMu.Lock()
+	defer b.reconcileMu.Unlock()
+	if generation != b.reconcileGeneration.Load() {
+		return false, nil
+	}
+	return b.convergePersistedDefinitions(ctx)
+}
+
+func (b *Service) reconcileSnapshot(ctx context.Context, snapshot schedulersdk.DefinitionSnapshot) error {
 	if b.definitionRepository == nil {
 		return fmt.Errorf("Scheduler definition repository is unavailable")
 	}
-	if err := b.definitionRepository.SyncDefinitions(ctx, schedulerpersistence.DefinitionSnapshot{
-		Revision: snapshot.Revision, SchemaVersion: fmt.Sprint(snapshot.Revision), SourceKind: "runtime_host", SourceID: b.application.RuntimeID, Definitions: snapshot.Definitions,
-	}); err != nil {
-		return fmt.Errorf("persist Scheduler definitions: %w", err)
-	}
-	persisted, err := b.definitionRepository.DefinitionSnapshot(ctx)
-	if err != nil {
-		return fmt.Errorf("load Scheduler definitions: %w", err)
-	}
-	persisted.Revision = snapshot.Revision
-	now := time.Now().UTC()
-	next := make(map[string]schedulersdk.Definition, len(persisted.Definitions))
-	active := make([]string, 0, len(persisted.Definitions))
-	for _, definition := range persisted.Definitions {
+	for _, definition := range snapshot.Definitions {
 		definition = definition.Normalize()
 		if err := definition.Validate(); err != nil {
 			return err
@@ -110,26 +149,117 @@ func (b *Service) Reconcile(ctx context.Context) error {
 		if err := schedule.Validate(definition.Schedule); err != nil {
 			return fmt.Errorf("scheduler definition %s: %w", definition.Key, err)
 		}
+	}
+	persisted := schedulerpersistence.DefinitionSnapshot{
+		Revision: snapshot.Revision, SchemaVersion: fmt.Sprint(snapshot.Revision), SourceKind: "runtime_host", SourceID: b.application.RuntimeID, Definitions: snapshot.Definitions,
+	}
+	switch b.mode {
+	case schedulersdk.DeploymentModeModule:
+		if err := schedulersdk.ValidateModuleDefinitionSnapshot(snapshot); err != nil {
+			return err
+		}
+	case schedulersdk.DeploymentModeSaaS:
+		if snapshot.PublisherSession == nil {
+			return schedulersdk.ErrDefinitionPublicationRequired
+		}
+		fence, err := snapshot.PublisherSession.PublisherFence()
+		if err != nil {
+			return err
+		}
+		contentHash, err := schedulersdk.DefinitionSnapshotContentSHA256(snapshot.Definitions)
+		if err != nil {
+			return err
+		}
+		persisted.PublisherFence = &fence
+		persisted.ContentSHA256 = contentHash
+	default:
+		return fmt.Errorf("Scheduler deployment mode %q is unsupported", b.mode)
+	}
+	if err := b.definitionRepository.SyncDefinitions(ctx, persisted); err != nil {
+		return fmt.Errorf("persist Scheduler definitions: %w", err)
+	}
+	found, err := b.convergePersistedDefinitions(ctx)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("Scheduler persisted definition snapshot is unavailable after reconcile")
+	}
+	return nil
+}
+
+func (b *Service) convergePersistedDefinitions(ctx context.Context) (bool, error) {
+	if b.definitionRepository == nil {
+		return false, fmt.Errorf("Scheduler definition repository is unavailable")
+	}
+	for attempt := 0; attempt < 64; attempt++ {
+		persisted, err := b.definitionRepository.DefinitionSnapshot(ctx)
+		if err != nil {
+			return false, fmt.Errorf("load Scheduler definitions: %w", err)
+		}
+		if strings.TrimSpace(persisted.SchemaVersion) == "" {
+			return false, nil
+		}
+		applied, err := b.applyPersistedDefinitions(ctx, persisted)
+		if err != nil {
+			return false, err
+		}
+		if applied {
+			return true, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+	}
+	return false, fmt.Errorf("Scheduler definition projection did not converge on the canonical snapshot")
+}
+
+func (b *Service) applyPersistedDefinitions(ctx context.Context, persisted schedulerpersistence.DefinitionSnapshot) (bool, error) {
+	now := time.Now().UTC()
+	next := make(map[string]schedulersdk.Definition, len(persisted.Definitions))
+	active := make([]string, 0, len(persisted.Definitions))
+	for _, definition := range persisted.Definitions {
+		definition = definition.Normalize()
+		if err := definition.Validate(); err != nil {
+			return false, err
+		}
+		if err := schedule.Validate(definition.Schedule); err != nil {
+			return false, fmt.Errorf("scheduler definition %s: %w", definition.Key, err)
+		}
 		next[definition.Key] = definition
-		if strings.EqualFold(strings.TrimSpace(definition.Status), "enabled") {
+		if persisted.PublisherFence == nil && strings.EqualFold(strings.TrimSpace(definition.Status), "enabled") {
 			active = append(active, definition.Key)
-			next := schedule.NextSchedule(definition.Schedule, now)
-			if !definition.InitialNextRunAt.IsZero() && definition.InitialNextRunAt.Before(next) {
-				next = definition.InitialNextRunAt.UTC()
+			nextRunAt := schedule.NextSchedule(definition.Schedule, now)
+			if !definition.InitialNextRunAt.IsZero() && definition.InitialNextRunAt.Before(nextRunAt) {
+				nextRunAt = definition.InitialNextRunAt.UTC()
 			}
-			if err := b.runs.Reconcile(ctx, definition, next); err != nil {
-				return fmt.Errorf("reconcile Scheduler definition %s: %w", definition.Key, err)
+			if err := b.runs.Reconcile(ctx, definition, nextRunAt); err != nil {
+				return false, fmt.Errorf("reconcile Scheduler definition %s: %w", definition.Key, err)
 			}
 		}
 	}
-	sort.Strings(active)
-	if err := b.runs.DisableMissing(ctx, active, persisted.Revision); err != nil {
-		return fmt.Errorf("disable removed Scheduler definitions: %w", err)
+	if persisted.PublisherFence != nil {
+		projector, ok := b.runs.(fencedDefinitionSnapshotProjector)
+		if !ok {
+			return false, fmt.Errorf("Scheduler SaaS run store cannot apply a fenced definition snapshot")
+		}
+		applied, err := projector.ApplyDefinitionSnapshot(ctx, persisted, now)
+		if err != nil {
+			return false, fmt.Errorf("apply fenced Scheduler definition projection: %w", err)
+		}
+		if !applied {
+			return false, nil
+		}
+	} else {
+		sort.Strings(active)
+		if err := b.runs.DisableMissing(ctx, active, persisted.Revision); err != nil {
+			return false, fmt.Errorf("disable removed Scheduler definitions: %w", err)
+		}
 	}
 	b.mu.Lock()
 	b.definitions = next
 	b.mu.Unlock()
-	return nil
+	return true, nil
 }
 
 func (b *Service) DefinitionRepository() schedulerpersistence.DefinitionRepository {
@@ -189,22 +319,46 @@ func (b *Service) Tick(ctx context.Context, now time.Time, limit int) (int, erro
 }
 
 func (b *Service) TriggerNow(ctx context.Context, key, reason string) (schedulersdk.Run, error) {
-	b.mu.RLock()
-	definition, found := b.definitions[strings.TrimSpace(key)]
-	b.mu.RUnlock()
+	key = strings.TrimSpace(key)
+	definition, found, err := b.publishedDefinition(ctx, key)
+	if err != nil {
+		return schedulersdk.Run{}, err
+	}
 	if !found {
 		return schedulersdk.Run{}, fmt.Errorf("scheduler definition %q is not published", key)
 	}
 	now := time.Now().UTC()
-	item := modulehost.DueTrigger{Definition: definition, ScheduledFor: now}
+	metadata, _ := json.Marshal(map[string]any{"trigger": "manual", "reason": strings.TrimSpace(reason)})
+	item := modulehost.DueTrigger{Definition: definition, ScheduledFor: now, Metadata: metadata}
 	run, claimed, err := b.runs.Claim(ctx, item, b.currentLeaseTTL())
 	if err != nil || !claimed {
 		return run, err
 	}
-	metadata, _ := json.Marshal(map[string]any{"trigger": "manual", "reason": strings.TrimSpace(reason)})
-	run.Trigger.Metadata = metadata
 	return run, b.dispatchClaimed(ctx, run, definition)
 }
+
+func (b *Service) publishedDefinition(ctx context.Context, key string) (schedulersdk.Definition, bool, error) {
+	if b.mode == schedulersdk.DeploymentModeSaaS {
+		if b.definitionRepository == nil {
+			return schedulersdk.Definition{}, false, fmt.Errorf("Scheduler definition repository is unavailable")
+		}
+		snapshot, err := b.definitionRepository.DefinitionSnapshot(ctx)
+		if err != nil {
+			return schedulersdk.Definition{}, false, fmt.Errorf("load Scheduler definitions: %w", err)
+		}
+		for _, definition := range snapshot.Definitions {
+			if strings.TrimSpace(definition.Key) == key {
+				return definition.Normalize(), true, nil
+			}
+		}
+		return schedulersdk.Definition{}, false, nil
+	}
+	b.mu.RLock()
+	definition, found := b.definitions[key]
+	b.mu.RUnlock()
+	return definition, found, nil
+}
+
 func (b *Service) Reschedule(ctx context.Context, key string, nextRunAt time.Time, reason string) error {
 	return b.runs.Reschedule(ctx, strings.TrimSpace(key), nextRunAt.UTC(), strings.TrimSpace(reason))
 }
@@ -295,43 +449,92 @@ func (b *Service) RequeueDeadLetter(ctx context.Context, id, reason string) (sch
 }
 
 func (b *Service) Start(ctx context.Context, config schedulersdk.WorkerConfig) <-chan struct{} {
-	done := make(chan struct{})
 	config = schedulersdk.NormalizeWorkerConfig(config)
+	if !config.Enabled {
+		return closedLifecycleDone()
+	}
+	if ctx == nil || ctx.Err() != nil {
+		return closedLifecycleDone()
+	}
+
+	// One Start call owns each live worker generation. Concurrent calls join
+	// that generation and receive the same completion signal; after its caller
+	// context is canceled and done closes, a later Start creates a new one.
+	b.lifecycleMu.Lock()
+	if b.closed || b.ctx.Err() != nil {
+		b.lifecycleMu.Unlock()
+		return closedLifecycleDone()
+	}
+	if b.workerDone != nil {
+		done := b.workerDone
+		b.lifecycleMu.Unlock()
+		return done
+	}
 	b.mu.Lock()
 	b.leaseTTL = config.LeaseTTL
 	b.mu.Unlock()
-	if !config.Enabled {
-		close(done)
-		return done
-	}
-	started := false
-	b.startOnce.Do(func() {
-		started = true
-		go func() {
-			defer close(done)
-			runCtx, cancel := context.WithCancel(ctx)
-			defer cancel()
-			go func() {
-				select {
-				case <-b.ctx.Done():
-					cancel()
-				case <-runCtx.Done():
-				}
-			}()
-			_ = b.Reconcile(runCtx)
-			loopDone := worker.StartNamedLoop(runCtx, "scheduler", config.PollInterval, func() {
-				_, _ = b.Tick(runCtx, time.Now().UTC(), config.BatchSize)
-			})
-			<-loopDone
-		}()
-	})
-	if !started {
-		close(done)
-	}
+	done := make(chan struct{})
+	runCtx, cancel := context.WithCancel(ctx)
+	stopOwnerCancellation := context.AfterFunc(b.ctx, cancel)
+	b.workerDone = done
+	b.lifecycleMu.Unlock()
+
+	go b.runWorker(runCtx, cancel, stopOwnerCancellation, config, done)
 	return done
 }
 
-func (b *Service) Close(context.Context) error { b.closeOnce.Do(b.cancel); return nil }
+func (b *Service) runWorker(ctx context.Context, cancel context.CancelFunc, stopOwnerCancellation func() bool, config schedulersdk.WorkerConfig, done chan struct{}) {
+	defer func() {
+		stopOwnerCancellation()
+		cancel()
+		b.lifecycleMu.Lock()
+		if b.workerDone == done {
+			b.workerDone = nil
+		}
+		close(done)
+		b.lifecycleMu.Unlock()
+	}()
+	// Module hosts own an in-process definition provider that is ready at
+	// worker start. SaaS snapshots arrive through the private Reconcile
+	// protocol and are synchronized before its worker is started; treating
+	// the initial empty SaaS host as a publication can disable durable state.
+	if b.mode == schedulersdk.DeploymentModeModule {
+		_ = b.Reconcile(ctx)
+	}
+	loopDone := worker.StartNamedLoop(ctx, "scheduler", config.PollInterval, func() {
+		_, _ = b.Tick(ctx, time.Now().UTC(), config.BatchSize)
+	})
+	<-loopDone
+}
+
+func (b *Service) Close(ctx context.Context) error {
+	b.lifecycleMu.Lock()
+	shouldCancel := !b.closed
+	b.closed = true
+	done := b.workerDone
+	b.lifecycleMu.Unlock()
+	if shouldCancel {
+		b.cancel()
+	}
+	if done == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func closedLifecycleDone() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}
 
 var _ schedulersdk.Binding = (*Service)(nil)
 var _ actioncontract.Provider = (*Service)(nil)

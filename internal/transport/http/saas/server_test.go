@@ -2,6 +2,7 @@ package saas
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -17,12 +18,39 @@ import (
 type serviceStub struct {
 	snapshot    schedulersdk.DefinitionSnapshot
 	deadLetters []schedulersdk.DeadLetter
+	session     schedulersdk.DefinitionPublisherSession
+	calls       int
+	application schedulersdk.ApplicationRef
+	reschedules int
+	closeCalls  int
 }
 
-func (s *serviceStub) Descriptor(context.Context, schedulersdk.ApplicationRef) (schedulersdk.Descriptor, error) {
-	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS}, nil
+type handlerRoundTripper struct{ handler http.Handler }
+
+func (t handlerRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	t.handler.ServeHTTP(response, request)
+	return response.Result(), nil
 }
-func (s *serviceStub) Reconcile(_ context.Context, _ schedulersdk.ApplicationRef, snapshot schedulersdk.DefinitionSnapshot) error {
+
+func (s *serviceStub) called(application schedulersdk.ApplicationRef) {
+	s.calls++
+	s.application = application
+}
+
+func (s *serviceStub) Descriptor(_ context.Context, application schedulersdk.ApplicationRef) (schedulersdk.Descriptor, error) {
+	s.called(application)
+	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS, Capabilities: []string{schedulersdk.CapabilityDefinitionPublicationFencing}}, nil
+}
+func (s *serviceStub) BeginDefinitionPublisherSession(_ context.Context, application schedulersdk.ApplicationRef) (schedulersdk.DefinitionPublisherSession, error) {
+	s.called(application)
+	if s.session.Generation == 0 {
+		s.session = schedulersdk.DefinitionPublisherSession{ContractVersion: schedulersdk.DefinitionPublicationContractVersion, Generation: 1, SessionNonce: strings.Repeat("s", 32)}
+	}
+	return s.session, nil
+}
+func (s *serviceStub) Reconcile(_ context.Context, application schedulersdk.ApplicationRef, snapshot schedulersdk.DefinitionSnapshot) error {
+	s.called(application)
 	s.snapshot = snapshot
 	return nil
 }
@@ -35,7 +63,8 @@ func (*serviceStub) Tick(context.Context, schedulersdk.ApplicationRef, time.Time
 func (*serviceStub) TriggerNow(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error) {
 	return schedulersdk.Run{}, nil
 }
-func (*serviceStub) Reschedule(context.Context, schedulersdk.ApplicationRef, string, time.Time, string) error {
+func (s *serviceStub) Reschedule(context.Context, schedulersdk.ApplicationRef, string, time.Time, string) error {
+	s.reschedules++
 	return nil
 }
 func (*serviceStub) Runs(context.Context, schedulersdk.ApplicationRef, int) ([]schedulersdk.Run, error) {
@@ -50,7 +79,8 @@ func (*serviceStub) RetryRun(context.Context, schedulersdk.ApplicationRef, strin
 func (*serviceStub) CancelRun(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error) {
 	return schedulersdk.Run{}, nil
 }
-func (s *serviceStub) DeadLetters(context.Context, schedulersdk.ApplicationRef, int) ([]schedulersdk.DeadLetter, error) {
+func (s *serviceStub) DeadLetters(_ context.Context, application schedulersdk.ApplicationRef, _ int) ([]schedulersdk.DeadLetter, error) {
+	s.called(application)
 	return s.deadLetters, nil
 }
 func (*serviceStub) DeadLetter(context.Context, schedulersdk.ApplicationRef, string) (schedulersdk.DeadLetter, error) {
@@ -62,16 +92,18 @@ func (*serviceStub) ResolveDeadLetter(context.Context, schedulersdk.ApplicationR
 func (*serviceStub) RequeueDeadLetter(context.Context, schedulersdk.ApplicationRef, string, string) (schedulersdk.Run, error) {
 	return schedulersdk.Run{}, nil
 }
-func (*serviceStub) Close(context.Context, schedulersdk.ApplicationRef) error { return nil }
+func (s *serviceStub) Close(context.Context, schedulersdk.ApplicationRef) error {
+	s.closeCalls++
+	return nil
+}
 
 func TestServerAndSDKHTTPTransportPublishDefinitions(t *testing.T) {
 	service := &serviceStub{}
-	handler, err := New(Options{BearerToken: "secret", Service: service})
+	handler, err := New(Options{ApplicationTokens: map[string]string{"runtime-a": "secret"}, Service: service})
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpServer := httptest.NewServer(handler.Routes())
-	defer httpServer.Close()
+	client := &http.Client{Transport: handlerRoundTripper{handler: handler.Routes()}}
 	directCapability, err := schedulercapability.NewBinding()
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +112,7 @@ func TestServerAndSDKHTTPTransportPublishDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: httpServer.URL, Token: "secret", Client: httpServer.Client(), CapabilityContractSHA256: directSummary.Identity.ContractSHA256})
+	transport, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: "http://scheduler.test", Token: "secret", Client: client, CapabilityContractSHA256: directSummary.Identity.ContractSHA256})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,10 +133,14 @@ func TestServerAndSDKHTTPTransportPublishDefinitions(t *testing.T) {
 		}
 		assertCanonicalEqual(t, directDocument, remoteDocument)
 	}
-	if _, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: httpServer.URL, Token: "secret", Client: httpServer.Client(), CapabilityContractSHA256: strings.Repeat("0", 64)}); err == nil {
+	if _, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: "http://scheduler.test", Token: "secret", Client: client, CapabilityContractSHA256: strings.Repeat("0", 64)}); err == nil {
 		t.Fatal("Scheduler Remote accepted a stale capability digest")
 	}
-	snapshot := schedulersdk.DefinitionSnapshot{Revision: 9, Definitions: []schedulersdk.Definition{{Key: "daily"}}}
+	session, err := transport.BeginDefinitionPublisherSession(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := schedulersdk.DefinitionSnapshot{PublisherSession: &session, Revision: 9, Definitions: []schedulersdk.Definition{{Key: "daily"}}}
 	if err := transport.Reconcile(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +154,119 @@ func TestServerAndSDKHTTPTransportPublishDefinitions(t *testing.T) {
 	}
 	if len(deadLetters) != 1 || deadLetters[0].RunID != "run-dead" {
 		t.Fatalf("dead letters=%+v", deadLetters)
+	}
+}
+
+func TestServerBindsPrivateCredentialToRuntimeBeforeCallingService(t *testing.T) {
+	service := &serviceStub{}
+	handler, err := New(Options{ApplicationTokens: map[string]string{"runtime-a": "token-a", "runtime-b": "token-b"}, Service: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, path, token string
+		want              int
+	}{
+		{name: "cross tenant", path: "/v1/applications/runtime-b/descriptor", token: "token-a", want: http.StatusForbidden},
+		{name: "unknown tenant", path: "/v1/applications/runtime-unknown/descriptor", token: "token-a", want: http.StatusForbidden},
+		{name: "wrong token", path: "/v1/applications/runtime-a/descriptor", token: "wrong", want: http.StatusUnauthorized},
+		{name: "missing token", path: "/v1/applications/runtime-a/descriptor", want: http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			if test.token != "" {
+				request.Header.Set("Authorization", "Bearer "+test.token)
+			}
+			request.Header.Set("X-Domainry-Runtime-ID", "runtime-b")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want || service.calls != 0 {
+				t.Fatalf("status=%d want=%d service calls=%d body=%s", response.Code, test.want, service.calls, response.Body.String())
+			}
+		})
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/applications/runtime-a/descriptor", nil)
+	request.Header.Set("Authorization", "Bearer token-a")
+	request.Header.Set("X-Domainry-Runtime-ID", "runtime-b")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || service.calls != 1 || service.application.RuntimeID != "runtime-a" {
+		t.Fatalf("status=%d calls=%d application=%+v body=%s", response.Code, service.calls, service.application, response.Body.String())
+	}
+}
+
+func TestServerDoesNotMountPublicSchedulerActionsWithoutHumanPrincipalAuthorization(t *testing.T) {
+	service := &serviceStub{}
+	handler, err := New(Options{ApplicationTokens: map[string]string{"runtime-a": "token-a"}, Service: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ method, path, body string }{
+		{method: http.MethodGet, path: "/scheduler/state"},
+		{method: http.MethodGet, path: "/scheduler/definitions/daily"},
+		{method: http.MethodPost, path: "/scheduler/definitions/daily/run", body: `{}`},
+	} {
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+		request.Header.Set("Authorization", "Bearer token-a")
+		request.Header.Set("X-Domainry-Runtime-ID", "runtime-a")
+		request.Header.Set("Idempotency-Key", "attack-1")
+		request.Header.Set("X-Operation-Reason", "attack")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound || service.calls != 0 {
+			t.Fatalf("%s %s status=%d service calls=%d body=%s", test.method, test.path, response.Code, service.calls, response.Body.String())
+		}
+	}
+}
+
+func TestServerRoutesRescheduleSeparatelyFromPublicationSession(t *testing.T) {
+	service := &serviceStub{}
+	handler, err := New(Options{ApplicationTokens: map[string]string{"runtime-a": "token-a"}, Service: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/applications/runtime-a/definitions/daily/reschedule", strings.NewReader(`{"next_run_at":"2026-09-08T09:00:00Z","reason":"operator"}`))
+	request.Header.Set("Authorization", "Bearer token-a")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || service.reschedules != 1 {
+		t.Fatalf("reschedule status=%d calls=%d body=%s", response.Code, service.reschedules, response.Body.String())
+	}
+
+	weird := httptest.NewRequest(http.MethodPost, "/v1/applications/runtime-a/definition-publication-sessions/daily/reschedule", strings.NewReader(`{"next_run_at":"2026-09-08T09:00:00Z","reason":"operator"}`))
+	weird.Header.Set("Authorization", "Bearer token-a")
+	weirdResponse := httptest.NewRecorder()
+	handler.ServeHTTP(weirdResponse, weird)
+	if weirdResponse.Code != http.StatusMethodNotAllowed || service.reschedules != 1 || service.session.Generation != 0 {
+		t.Fatalf("weird path status=%d reschedules=%d session=%+v body=%s", weirdResponse.Code, service.reschedules, service.session, weirdResponse.Body.String())
+	}
+}
+
+func TestLegacyBindingDeleteIsAServiceLifecycleNoop(t *testing.T) {
+	service := &serviceStub{}
+	handler, err := New(Options{ApplicationTokens: map[string]string{"runtime-a": "token-a"}, Service: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodDelete, "/v1/applications/runtime-a/binding", nil)
+	request.Header.Set("Authorization", "Bearer token-a")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || service.closeCalls != 0 {
+		t.Fatalf("binding delete status=%d service close calls=%d", response.Code, service.closeCalls)
+	}
+}
+
+func TestServerRejectsCredentialsThatAreMissingOrSharedAcrossApplications(t *testing.T) {
+	service := &serviceStub{}
+	if _, err := New(Options{Service: service}); err == nil {
+		t.Fatal("server accepted no application credentials")
+	}
+	if _, err := New(Options{ApplicationTokens: map[string]string{"runtime-a": "shared", "runtime-b": "shared"}, Service: service}); err == nil {
+		t.Fatal("server accepted one bearer credential for multiple applications")
+	}
+	if _, err := New(Options{ApplicationTokens: map[string]string{"runtime-a": "  "}, Service: service}); err == nil {
+		t.Fatal("server accepted an empty bearer credential")
 	}
 }
 

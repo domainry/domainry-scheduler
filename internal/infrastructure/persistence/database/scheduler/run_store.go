@@ -13,6 +13,7 @@ import (
 	"github.com/domainry/domainry-orm/query"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	"github.com/domainry/domainry-scheduler-sdk/schedule"
 )
 
@@ -41,6 +42,10 @@ func New(db modulehost.Database, dialect modulehost.Dialect, runtimeID, workerID
 }
 
 func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next time.Time) error {
+	return s.reconcileWith(ctx, s.db, d, next)
+}
+
+func (s *Store) reconcileWith(ctx context.Context, executor sqlExecutor, d schedulersdk.Definition, next time.Time) error {
 	raw, err := json.Marshal(d)
 	if err != nil {
 		return err
@@ -54,7 +59,7 @@ func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next t
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, changed, changedArgs...)
+	result, err := executor.ExecContext(ctx, changed, changedArgs...)
 	if err != nil {
 		return err
 	}
@@ -67,7 +72,7 @@ func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next t
 	if err != nil {
 		return err
 	}
-	result, err = s.db.ExecContext(ctx, stable, stableArgs...)
+	result, err = executor.ExecContext(ctx, stable, stableArgs...)
 	if err != nil {
 		return err
 	}
@@ -79,7 +84,7 @@ func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next t
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, insert, insertArgs...)
+	_, err = executor.ExecContext(ctx, insert, insertArgs...)
 	if err == nil {
 		return nil
 	}
@@ -91,11 +96,15 @@ func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next t
 }
 
 func (s *Store) DisableMissing(ctx context.Context, active []string, revision int64) error {
+	return s.disableMissingWith(ctx, s.db, active, revision)
+}
+
+func (s *Store) disableMissingWith(ctx context.Context, executor sqlExecutor, active []string, revision int64) error {
 	update, args, err := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("enabled", false).Set("snapshot_revision", revision).Where(query.Equal("runtime_id", s.runtimeID)).Build()
 	if err != nil {
 		return err
 	}
-	if _, err = s.db.ExecContext(ctx, update, args...); err != nil {
+	if _, err = executor.ExecContext(ctx, update, args...); err != nil {
 		return err
 	}
 	if len(active) == 0 {
@@ -109,8 +118,109 @@ func (s *Store) DisableMissing(ctx context.Context, active []string, revision in
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, update, args...)
+	_, err = executor.ExecContext(ctx, update, args...)
 	return err
+}
+
+// ApplyDefinitionSnapshot projects one fenced canonical SaaS snapshot into the
+// execution state while holding the canonical publication cursor row. A stale
+// reader therefore either applies before the newer canonical commit or observes
+// the new cursor and performs no writes; it cannot regress the shared worker
+// projection after a newer snapshot has committed.
+func (s *Store) ApplyDefinitionSnapshot(ctx context.Context, snapshot schedulerpersistence.DefinitionSnapshot, now time.Time) (bool, error) {
+	if snapshot.PublisherFence == nil || snapshot.Revision <= 0 || strings.TrimSpace(snapshot.ContentSHA256) == "" {
+		return false, fmt.Errorf("Scheduler fenced definition projection identity is required")
+	}
+	if err := snapshot.PublisherFence.Validate(); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(snapshot.SourceKind) != runtimeDefinitionSourceKind || strings.TrimSpace(snapshot.SourceID) != s.runtimeID {
+		return false, fmt.Errorf("Scheduler fenced definition projection does not match the bound Runtime application")
+	}
+	contentHash, err := schedulersdk.DefinitionSnapshotContentSHA256(snapshot.Definitions)
+	if err != nil {
+		return false, err
+	}
+	if contentHash != snapshot.ContentSHA256 {
+		return false, fmt.Errorf("Scheduler fenced definition projection content hash is inconsistent")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := s.lockDefinitionSnapshotCursor(ctx, tx, snapshot)
+	if err != nil || !current {
+		return false, err
+	}
+	active := make([]string, 0, len(snapshot.Definitions))
+	for _, definition := range snapshot.Definitions {
+		definition = definition.Normalize()
+		if err := definition.Validate(); err != nil {
+			return false, err
+		}
+		if err := schedule.Validate(definition.Schedule); err != nil {
+			return false, fmt.Errorf("scheduler definition %s: %w", definition.Key, err)
+		}
+		if !strings.EqualFold(strings.TrimSpace(definition.Status), "enabled") {
+			continue
+		}
+		active = append(active, definition.Key)
+		next := schedule.NextSchedule(definition.Schedule, now)
+		if !definition.InitialNextRunAt.IsZero() && definition.InitialNextRunAt.Before(next) {
+			next = definition.InitialNextRunAt.UTC()
+		}
+		if err := s.reconcileWith(ctx, tx, definition, next); err != nil {
+			return false, err
+		}
+	}
+	if err := s.disableMissingWith(ctx, tx, active, snapshot.Revision); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) lockDefinitionSnapshotCursor(ctx context.Context, tx *sql.Tx, snapshot schedulerpersistence.DefinitionSnapshot) (bool, error) {
+	fence := *snapshot.PublisherFence
+	// Match the published cursor, not the active session. Begin may already have
+	// retired the cursor's session without publishing replacement content; until
+	// that publication commits, the prior canonical snapshot remains executable.
+	predicate := query.And(
+		query.Equal("source_kind", runtimeDefinitionSourceKind), query.Equal("source_id", s.runtimeID),
+		query.Equal("cursor_generation", fence.Generation), query.Equal("cursor_session_sha256", fence.SessionSHA256),
+		query.Equal("cursor_revision", snapshot.Revision), query.Equal("cursor_content_sha256", snapshot.ContentSHA256),
+	)
+	// The deliberately idempotent update is a cross-dialect write lock. Do not
+	// infer a match from RowsAffected: driver configurations disagree for no-op
+	// updates, so the cursor is read back and compared inside this transaction.
+	lockStatement, lockArgs, err := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_publications").
+		Set("cursor_revision", snapshot.Revision).Where(predicate).Build()
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, lockStatement, lockArgs...); err != nil {
+		return false, err
+	}
+	selectStatement, selectArgs, err := query.NewSelectBuilder(s.dialect, "_scheduler_definition_publications").Columns(
+		"cursor_generation", "cursor_session_sha256", "cursor_revision", "cursor_content_sha256",
+	).Where(query.And(query.Equal("source_kind", runtimeDefinitionSourceKind), query.Equal("source_id", s.runtimeID))).Build()
+	if err != nil {
+		return false, err
+	}
+	var generation uint64
+	var sessionHash string
+	var revision int64
+	var contentHash string
+	if err := tx.QueryRowContext(ctx, selectStatement, selectArgs...).Scan(&generation, &sessionHash, &revision, &contentHash); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return generation == fence.Generation && sessionHash == fence.SessionSHA256 && revision == snapshot.Revision && contentHash == snapshot.ContentSHA256, nil
 }
 
 func (s *Store) Reschedule(ctx context.Context, key string, nextRunAt time.Time, _ string) error {
@@ -205,7 +315,8 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 	now := time.Now().UTC()
 	id := runID(s.runtimeID, due.Definition.Key, due.ScheduledFor)
 	target, _ := json.Marshal(due.Definition.Target)
-	insert, args, err := query.NewInsertBuilder(s.dialect, "_scheduler_runs").Columns("runtime_id", "run_id", "definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "created_at", "updated_at").Values(s.runtimeID, id, due.Definition.Key, due.Definition.Revision, formatTime(due.ScheduledFor), due.ScheduledFor.UTC().Format(time.RFC3339), string(target), "leased", 1, s.workerID, formatTime(now.Add(ttl)), int64(1), formatTime(now), formatTime(now)).Build()
+	windowKey := due.ScheduledFor.UTC().Format(time.RFC3339)
+	insert, args, err := query.NewInsertBuilder(s.dialect, "_scheduler_runs").Columns("runtime_id", "run_id", "definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "metadata_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "created_at", "updated_at").Values(s.runtimeID, id, due.Definition.Key, due.Definition.Revision, formatTime(due.ScheduledFor), windowKey, string(target), nullable(string(due.Metadata)), "leased", 1, s.workerID, formatTime(now.Add(ttl)), int64(1), formatTime(now), formatTime(now)).Build()
 	if err != nil {
 		return schedulersdk.Run{}, false, err
 	}
@@ -219,7 +330,12 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 			return schedulersdk.Run{}, false, err
 		}
 		_ = tx.Rollback()
-		return s.takeExpired(ctx, id, ttl, now)
+		run, claimed, takeErr := s.takeExpired(ctx, id, ttl, now)
+		if takeErr != nil || claimed {
+			return run, claimed, takeErr
+		}
+		run, getErr := s.get(ctx, id)
+		return run, false, getErr
 	}
 	if err = s.advanceCursorWith(ctx, tx, due.Definition, due.ScheduledFor, now, "leased"); err != nil {
 		return schedulersdk.Run{}, false, err
@@ -230,7 +346,7 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 	if err = tx.Commit(); err != nil {
 		return schedulersdk.Run{}, false, err
 	}
-	run := schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: id, DefinitionKey: due.Definition.Key, DefinitionRev: due.Definition.Revision, ScheduledFor: due.ScheduledFor, WindowKey: due.ScheduledFor.UTC().Format(time.RFC3339), Target: due.Definition.Target, IdempotencyKey: id, Attempt: 1}, Lease: schedulersdk.Lease{Owner: s.workerID, Token: 1, ExpiresAt: now.Add(ttl)}, Status: "leased", CreatedAt: now, UpdatedAt: now}
+	run := schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: id, DefinitionKey: due.Definition.Key, DefinitionRev: due.Definition.Revision, ScheduledFor: due.ScheduledFor.UTC(), WindowKey: windowKey, Target: due.Definition.Target, IdempotencyKey: id, Attempt: 1, Metadata: append(json.RawMessage(nil), due.Metadata...)}, Lease: schedulersdk.Lease{Owner: s.workerID, Token: 1, ExpiresAt: now.Add(ttl)}, Status: "leased", CreatedAt: now, UpdatedAt: now}
 	return run, true, nil
 }
 

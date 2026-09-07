@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/domainry/domainry-orm/sqlhost"
+	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	schedulermodulehost "github.com/domainry/domainry-scheduler-sdk/modulehost"
 	"github.com/domainry/domainry-scheduler/internal/infrastructure/persistence"
 	"github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database/migration"
@@ -21,8 +22,8 @@ func NewStore(database schedulermodulehost.Database, dialect schedulermodulehost
 	return schedulerstore.New(database, dialect, runtimeID, workerID)
 }
 
-func NewDefinitionStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect) DefinitionStore {
-	return schedulerstore.NewDefinitionStore(database, dialect)
+func NewDefinitionStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect, runtimeID string, mode schedulersdk.DeploymentMode) (DefinitionStore, error) {
+	return schedulerstore.NewDefinitionStore(database, dialect, runtimeID, mode)
 }
 
 func NewCommandReceiptStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect, runtimeID string) (*CommandReceiptStore, error) {

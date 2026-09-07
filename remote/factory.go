@@ -50,6 +50,11 @@ func (f Factory) OpenSaaS(ctx context.Context, application schedulersdk.Applicat
 	if host == nil || host.Definitions() == nil || host.Dispatcher() == nil {
 		return nil, fmt.Errorf("Scheduler SaaS Runtime host is incomplete")
 	}
+	if binder, ok := transport.(saashost.ApplicationBindingTransport); ok {
+		if err := binder.BindApplication(application); err != nil {
+			return nil, fmt.Errorf("bind Scheduler SaaS transport application: %w", err)
+		}
+	}
 	descriptor, err := transport.Descriptor(ctx, application)
 	if err != nil {
 		return nil, fmt.Errorf("read Scheduler SaaS descriptor: %w", err)
@@ -60,7 +65,21 @@ func (f Factory) OpenSaaS(ctx context.Context, application schedulersdk.Applicat
 	if descriptor.Mode != schedulersdk.DeploymentModeSaaS {
 		return nil, fmt.Errorf("Scheduler remote descriptor mode must be saas")
 	}
-	return &binding{application: application, transport: transport, host: host, descriptor: descriptor}, nil
+	if !descriptor.Supports(schedulersdk.CapabilityDefinitionPublicationFencing) {
+		return nil, schedulersdk.ErrDefinitionPublicationCapabilityRequired
+	}
+	publication, ok := transport.(saashost.DefinitionPublicationTransport)
+	if !ok {
+		return nil, schedulersdk.ErrDefinitionPublicationCapabilityRequired
+	}
+	session, err := publication.BeginDefinitionPublisherSession(ctx, application)
+	if err != nil {
+		return nil, fmt.Errorf("begin Scheduler definition publisher session: %w", err)
+	}
+	if err := session.Validate(); err != nil {
+		return nil, fmt.Errorf("begin Scheduler definition publisher session: %w", err)
+	}
+	return &binding{application: application, transport: transport, host: host, descriptor: descriptor, publication: session, closed: make(chan struct{})}, nil
 }
 
 type binding struct {
@@ -68,7 +87,9 @@ type binding struct {
 	transport   saashost.Transport
 	host        modulehost.Host
 	descriptor  schedulersdk.Descriptor
-	startOnce   sync.Once
+	publication schedulersdk.DefinitionPublisherSession
+	closed      chan struct{}
+	closeOnce   sync.Once
 }
 
 func (b *binding) Descriptor() schedulersdk.Descriptor { return b.descriptor }
@@ -86,11 +107,13 @@ func (b *binding) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read Runtime Scheduler definitions: %w", err)
 	}
-	for _, definition := range snapshot.Definitions {
-		if err := definition.Validate(); err != nil {
-			return err
-		}
+	// Runtime host snapshots carry process-local configuration only. The
+	// Scheduler-issued session is the sole publication authority.
+	snapshot.PublisherSession = nil
+	if err := schedulersdk.ValidateModuleDefinitionSnapshot(snapshot); err != nil {
+		return err
 	}
+	snapshot.PublisherSession = &b.publication
 	return b.transport.Reconcile(ctx, b.application, snapshot)
 }
 func (b *binding) Preview(ctx context.Context, value schedulersdk.Schedule, after time.Time, count int) ([]time.Time, error) {
@@ -129,12 +152,37 @@ func (b *binding) ResolveDeadLetter(ctx context.Context, id, reason string) (sch
 func (b *binding) RequeueDeadLetter(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	return b.transport.RequeueDeadLetter(ctx, b.application, id, reason)
 }
-func (b *binding) Start(ctx context.Context, config schedulersdk.WorkerConfig) <-chan struct{} {
+func (b *binding) Start(ctx context.Context, _ schedulersdk.WorkerConfig) <-chan struct{} {
 	done := make(chan struct{})
-	b.startOnce.Do(func() { close(done) })
+	if ctx == nil {
+		close(done)
+		return done
+	}
+	select {
+	case <-ctx.Done():
+		close(done)
+		return done
+	case <-b.closed:
+		close(done)
+		return done
+	default:
+	}
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+		case <-b.closed:
+		}
+	}()
 	return done // the SaaS control plane owns its clock worker
 }
-func (b *binding) Close(ctx context.Context) error { return b.transport.Close(ctx, b.application) }
+
+// Close releases only this Runtime-side handle. A stale publisher must never
+// be able to stop the Scheduler-owned worker or delete application state.
+func (b *binding) Close(context.Context) error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	return nil
+}
 
 var _ schedulersdk.Factory = Factory{}
 var _ saashost.Factory = Factory{}

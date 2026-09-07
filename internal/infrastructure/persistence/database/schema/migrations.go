@@ -8,7 +8,7 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
 
-const SchemaVersion uint = 3
+const SchemaVersion uint = 5
 
 type Migration = ormmigration.Migration
 
@@ -66,10 +66,20 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build Scheduler command receipt table: %w", err)
 	}
+	definitionSnapshotStatement, _, err := definitionSnapshotTable(r).Build()
+	if err != nil {
+		return nil, fmt.Errorf("build Scheduler definition snapshot table: %w", err)
+	}
+	definitionPublicationStatement, _, err := definitionPublicationTable(r).Build()
+	if err != nil {
+		return nil, fmt.Errorf("build Scheduler definition publication table: %w", err)
+	}
 	return []modulehost.SchemaMigration{
 		{Version: 1, Name: "scheduler_foundation", Statements: statements},
 		{Version: 2, Name: "scheduler_definition_ownership", Statements: []string{definitionStatement}},
 		{Version: 3, Name: "scheduler_command_idempotency", Statements: []string{commandReceiptStatement}},
+		{Version: 4, Name: "scheduler_definition_snapshot_state", Statements: []string{definitionSnapshotStatement}},
+		{Version: 5, Name: "scheduler_definition_publication_fencing", Statements: []string{definitionPublicationStatement}},
 	}, nil
 }
 
@@ -106,6 +116,31 @@ func commandReceiptTable(r modulehost.Dialect) *ormschema.TableBuilder {
 		required("created_at", ormschema.TextKey(40)),
 		required("updated_at", ormschema.TextKey(40)),
 	).PrimaryKey("runtime_id", "idempotency_key")
+}
+
+func definitionSnapshotTable(r modulehost.Dialect) *ormschema.TableBuilder {
+	return ormschema.NewTable(r, "_scheduler_definition_snapshots").IfNotExists().Columns(
+		required("source_kind", ormschema.TextKey(191)),
+		required("source_id", ormschema.TextKey(191)),
+		required("revision", ormschema.BigInt()),
+		required("schema_version", ormschema.TextKey(255)),
+		required("schema_hash", ormschema.TextKey(64)),
+		required("updated_at", ormschema.TextKey(40)),
+	).PrimaryKey("source_kind", "source_id")
+}
+
+func definitionPublicationTable(r modulehost.Dialect) *ormschema.TableBuilder {
+	return ormschema.NewTable(r, "_scheduler_definition_publications").IfNotExists().Columns(
+		required("source_kind", ormschema.TextKey(191)),
+		required("source_id", ormschema.TextKey(191)),
+		required("active_generation", ormschema.BigInt()),
+		required("active_session_sha256", ormschema.TextKey(64)),
+		optional("cursor_generation", ormschema.BigInt()),
+		optional("cursor_session_sha256", ormschema.TextKey(64)),
+		optional("cursor_revision", ormschema.BigInt()),
+		optional("cursor_content_sha256", ormschema.TextKey(64)),
+		required("updated_at", ormschema.TextKey(40)),
+	).PrimaryKey("source_kind", "source_id")
 }
 
 func required(name string, kind ormschema.ColumnType) ormschema.ColumnDefinition {

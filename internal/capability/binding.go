@@ -244,19 +244,23 @@ func invalidResult(rule, field string, params map[string]string, err error) modu
 }
 
 func schedulerHTTPContract() ([]modulehttp.Route, map[string]map[string]any, error) {
-	contract, err := schedulersdk.SchedulerHTTPAdapterContract()
+	actions, err := schedulersdk.SchedulerAuthorizationActions()
 	if err != nil {
 		return nil, nil, err
 	}
-	routes := make([]modulehttp.Route, 0, len(contract.Routes))
-	for _, route := range contract.Routes {
-		projected, err := modulehttp.RouteFromAction(route.Action)
+	operations, err := schedulersdk.SchedulerHTTPOpenAPIOperations()
+	if err != nil {
+		return nil, nil, err
+	}
+	routes := make([]modulehttp.Route, 0, len(actions))
+	for _, action := range actions {
+		projected, err := modulehttp.RouteFromAction(action)
 		if err != nil {
-			return nil, nil, fmt.Errorf("project Scheduler Action %q: %w", route.Action.Key, err)
+			return nil, nil, fmt.Errorf("project Scheduler Action %q: %w", action.Key, err)
 		}
 		routes = append(routes, projected)
 	}
-	return routes, contract.OpenAPI, nil
+	return routes, operations, nil
 }
 
 func schedulerOperationOverrides(routes []modulehttp.Route) map[string]modulecapability.OperationExtension {

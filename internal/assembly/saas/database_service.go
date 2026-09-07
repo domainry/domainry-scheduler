@@ -10,6 +10,7 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	schedulersdkadapter "github.com/domainry/domainry-scheduler/internal/adapter/schedulersdk"
 	moduleassembly "github.com/domainry/domainry-scheduler/internal/assembly/module"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence"
@@ -17,14 +18,20 @@ import (
 
 type DownstreamHost = schedulersdkadapter.DownstreamHost
 
+var (
+	ErrStaleDefinitionSnapshot       = schedulersdk.ErrDefinitionSnapshotStale
+	ErrConflictingDefinitionSnapshot = schedulersdk.ErrDefinitionSnapshotConflict
+)
+
 type DatabaseServiceOptions struct {
-	Context     context.Context
-	Database    *sql.DB
-	Driver      string
-	Schema      string
-	WorkerID    string
-	Worker      schedulersdk.WorkerConfig
-	Downstreams func(context.Context, schedulersdk.ApplicationRef) (DownstreamHost, error)
+	Context      context.Context
+	Database     *sql.DB
+	Driver       string
+	Schema       string
+	WorkerID     string
+	Worker       schedulersdk.WorkerConfig
+	Applications []schedulersdk.ApplicationRef
+	Downstreams  func(context.Context, schedulersdk.ApplicationRef) (DownstreamHost, error)
 }
 
 // DatabaseService is the production SaaS implementation behind the HTTP
@@ -37,22 +44,35 @@ type DatabaseService struct {
 	cancel       context.CancelFunc
 	mu           sync.Mutex
 	applications map[string]*databaseApplication
+	configured   map[string]bool
 }
 
 type databaseApplication struct {
-	mu       sync.RWMutex
-	snapshot schedulersdk.DefinitionSnapshot
-	binding  schedulersdk.Binding
-	host     *databaseApplicationHost
-	cancel   context.CancelFunc
-	done     <-chan struct{}
+	mu          sync.RWMutex
+	reconcileMu sync.Mutex
+	ready       bool
+	binding     schedulersdk.Binding
+	host        *databaseApplicationHost
+	cancel      context.CancelFunc
+	done        <-chan struct{}
+}
+
+type definitionSnapshotReconciler interface {
+	ReconcileSnapshot(context.Context, schedulersdk.DefinitionSnapshot) error
+}
+
+type definitionSnapshotHydrator interface {
+	HydrateDefinitions(context.Context) (bool, error)
+}
+
+type definitionRepositoryOwner interface {
+	DefinitionRepository() schedulerpersistence.DefinitionRepository
 }
 
 type databaseApplicationHost struct {
-	service     DatabaseServiceOptions
-	dialect     modulehost.Dialect
-	application *databaseApplication
-	downstream  DownstreamHost
+	service    DatabaseServiceOptions
+	dialect    modulehost.Dialect
+	downstream DownstreamHost
 }
 
 func NewDatabaseService(options DatabaseServiceOptions) (*DatabaseService, error) {
@@ -68,7 +88,26 @@ func NewDatabaseService(options DatabaseServiceOptions) (*DatabaseService, error
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &DatabaseService{options: options, dialect: dialect, ctx: ctx, cancel: cancel, applications: map[string]*databaseApplication{}}, nil
+	service := &DatabaseService{options: options, dialect: dialect, ctx: ctx, cancel: cancel, applications: map[string]*databaseApplication{}, configured: map[string]bool{}}
+	for _, application := range options.Applications {
+		if err := application.Validate(); err != nil {
+			cancel()
+			return nil, err
+		}
+		key := strings.TrimSpace(application.RuntimeID)
+		if service.configured[key] {
+			cancel()
+			return nil, fmt.Errorf("Scheduler SaaS application %q is configured more than once", key)
+		}
+		service.configured[key] = true
+	}
+	for _, application := range options.Applications {
+		if _, err := service.application(ctx, application); err != nil {
+			_ = service.Shutdown(context.Background())
+			return nil, fmt.Errorf("restore Scheduler SaaS application %q: %w", application.RuntimeID, err)
+		}
+	}
+	return service, nil
 }
 
 func (s *DatabaseService) application(ctx context.Context, ref schedulersdk.ApplicationRef) (*databaseApplication, error) {
@@ -76,6 +115,9 @@ func (s *DatabaseService) application(ctx context.Context, ref schedulersdk.Appl
 		return nil, err
 	}
 	key := strings.TrimSpace(ref.RuntimeID)
+	if len(s.configured) != 0 && !s.configured[key] {
+		return nil, fmt.Errorf("Scheduler SaaS application %q is not configured", key)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if value := s.applications[key]; value != nil {
@@ -89,36 +131,105 @@ func (s *DatabaseService) application(ctx context.Context, ref schedulersdk.Appl
 		return nil, fmt.Errorf("Scheduler SaaS downstream host is unavailable for %s", key)
 	}
 	state := &databaseApplication{}
-	host := &databaseApplicationHost{service: s.options, dialect: s.dialect, application: state, downstream: downstream}
+	host := &databaseApplicationHost{service: s.options, dialect: s.dialect, downstream: downstream}
 	state.host = host
 	binding, err := moduleassembly.OpenSaaS(s.ctx, ref, host)
 	if err != nil {
 		return nil, err
 	}
 	state.binding = binding
-	worker := s.options.Worker
-	if worker == (schedulersdk.WorkerConfig{}) {
-		worker.Enabled = true
+	hydrator, ok := binding.(definitionSnapshotHydrator)
+	if !ok {
+		_ = binding.Close(ctx)
+		return nil, fmt.Errorf("Scheduler SaaS binding cannot hydrate durable definitions")
 	}
-	workerCtx, cancel := context.WithCancel(s.ctx)
-	state.cancel = cancel
-	state.done = binding.Start(workerCtx, worker)
+	hydrated, err := hydrator.HydrateDefinitions(ctx)
+	if err != nil {
+		_ = binding.Close(ctx)
+		return nil, err
+	}
+	if hydrated {
+		state.mu.Lock()
+		state.ready = true
+		state.mu.Unlock()
+		state.startWorker(s.ctx, s.options.Worker)
+	}
 	s.applications[key] = state
 	return state, nil
 }
 
-func (s *DatabaseService) Descriptor(context.Context, schedulersdk.ApplicationRef) (schedulersdk.Descriptor, error) {
-	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence"}}, nil
+func (s *DatabaseService) Descriptor(ctx context.Context, ref schedulersdk.ApplicationRef) (schedulersdk.Descriptor, error) {
+	if _, err := s.application(ctx, ref); err != nil {
+		return schedulersdk.Descriptor{}, err
+	}
+	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityDefinitionPublicationFencing}}, nil
 }
+
+func (s *DatabaseService) BeginDefinitionPublisherSession(ctx context.Context, ref schedulersdk.ApplicationRef) (schedulersdk.DefinitionPublisherSession, error) {
+	app, err := s.application(ctx, ref)
+	if err != nil {
+		return schedulersdk.DefinitionPublisherSession{}, err
+	}
+	app.reconcileMu.Lock()
+	defer app.reconcileMu.Unlock()
+	owner, ok := app.binding.(definitionRepositoryOwner)
+	if !ok {
+		return schedulersdk.DefinitionPublisherSession{}, fmt.Errorf("Scheduler SaaS binding has no definition repository")
+	}
+	repository, ok := owner.DefinitionRepository().(schedulerpersistence.DefinitionPublicationRepository)
+	if !ok {
+		return schedulersdk.DefinitionPublisherSession{}, schedulersdk.ErrDefinitionPublicationCapabilityRequired
+	}
+	return repository.BeginDefinitionPublisherSession(ctx)
+}
+
 func (s *DatabaseService) Reconcile(ctx context.Context, ref schedulersdk.ApplicationRef, snapshot schedulersdk.DefinitionSnapshot) error {
 	app, err := s.application(ctx, ref)
 	if err != nil {
 		return err
 	}
+	app.reconcileMu.Lock()
+	defer app.reconcileMu.Unlock()
+	reconciler, ok := app.binding.(definitionSnapshotReconciler)
+	if !ok {
+		return fmt.Errorf("Scheduler SaaS binding cannot reconcile an immutable Runtime snapshot")
+	}
+	if err := reconciler.ReconcileSnapshot(ctx, snapshot); err != nil {
+		return err
+	}
 	app.mu.Lock()
-	app.snapshot = cloneSnapshot(snapshot)
+	app.ready = true
 	app.mu.Unlock()
-	return app.binding.Reconcile(ctx)
+	app.startWorker(s.ctx, s.options.Worker)
+	return nil
+}
+
+// startWorker is deliberately called only after a real Runtime snapshot has
+// synchronized successfully. A read that lazily opens an application after a
+// process restart must never publish an empty snapshot or disable durable
+// definitions.
+func (a *databaseApplication) startWorker(parent context.Context, worker schedulersdk.WorkerConfig) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cancel != nil {
+		return
+	}
+	if worker == (schedulersdk.WorkerConfig{}) {
+		worker.Enabled = true
+	}
+	workerCtx, cancel := context.WithCancel(parent)
+	a.cancel = cancel
+	a.done = a.binding.Start(workerCtx, worker)
+}
+
+func (a *databaseApplication) requireReady() error {
+	a.mu.RLock()
+	ready := a.ready
+	a.mu.RUnlock()
+	if !ready {
+		return fmt.Errorf("Scheduler SaaS application requires a current Runtime definition snapshot")
+	}
+	return nil
 }
 func (s *DatabaseService) Preview(ctx context.Context, ref schedulersdk.ApplicationRef, value schedulersdk.Schedule, after time.Time, count int) ([]time.Time, error) {
 	app, err := s.application(ctx, ref)
@@ -132,6 +243,9 @@ func (s *DatabaseService) Tick(ctx context.Context, ref schedulersdk.Application
 	if err != nil {
 		return 0, err
 	}
+	if err := app.requireReady(); err != nil {
+		return 0, err
+	}
 	return app.binding.Tick(ctx, now, limit)
 }
 func (s *DatabaseService) TriggerNow(ctx context.Context, ref schedulersdk.ApplicationRef, key, reason string) (schedulersdk.Run, error) {
@@ -139,14 +253,20 @@ func (s *DatabaseService) TriggerNow(ctx context.Context, ref schedulersdk.Appli
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
+	if err := app.requireReady(); err != nil {
+		return schedulersdk.Run{}, err
+	}
 	return app.binding.TriggerNow(ctx, key, reason)
 }
 func (s *DatabaseService) Reschedule(ctx context.Context, ref schedulersdk.ApplicationRef, key string, nextRunAt time.Time, reason string) error {
-	binding, err := s.binding(ctx, ref)
+	app, err := s.application(ctx, ref)
 	if err != nil {
 		return err
 	}
-	return binding.Reschedule(ctx, key, nextRunAt, reason)
+	if err := app.requireReady(); err != nil {
+		return err
+	}
+	return app.binding.Reschedule(ctx, key, nextRunAt, reason)
 }
 func (s *DatabaseService) Runs(ctx context.Context, ref schedulersdk.ApplicationRef, limit int) ([]schedulersdk.Run, error) {
 	app, err := s.application(ctx, ref)
@@ -172,18 +292,24 @@ func (s *DatabaseService) Run(ctx context.Context, ref schedulersdk.ApplicationR
 	return binding.Run(ctx, id)
 }
 func (s *DatabaseService) RetryRun(ctx context.Context, ref schedulersdk.ApplicationRef, id, reason string) (schedulersdk.Run, error) {
-	binding, err := s.binding(ctx, ref)
+	app, err := s.application(ctx, ref)
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
-	return binding.RetryRun(ctx, id, reason)
+	if err := app.requireReady(); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return app.binding.RetryRun(ctx, id, reason)
 }
 func (s *DatabaseService) CancelRun(ctx context.Context, ref schedulersdk.ApplicationRef, id, reason string) (schedulersdk.Run, error) {
-	binding, err := s.binding(ctx, ref)
+	app, err := s.application(ctx, ref)
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
-	return binding.CancelRun(ctx, id, reason)
+	if err := app.requireReady(); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return app.binding.CancelRun(ctx, id, reason)
 }
 func (s *DatabaseService) DeadLetters(ctx context.Context, ref schedulersdk.ApplicationRef, limit int) ([]schedulersdk.DeadLetter, error) {
 	binding, err := s.binding(ctx, ref)
@@ -200,32 +326,29 @@ func (s *DatabaseService) DeadLetter(ctx context.Context, ref schedulersdk.Appli
 	return binding.DeadLetter(ctx, id)
 }
 func (s *DatabaseService) ResolveDeadLetter(ctx context.Context, ref schedulersdk.ApplicationRef, id, reason string) (schedulersdk.DeadLetter, error) {
-	binding, err := s.binding(ctx, ref)
+	app, err := s.application(ctx, ref)
 	if err != nil {
 		return schedulersdk.DeadLetter{}, err
 	}
-	return binding.ResolveDeadLetter(ctx, id, reason)
+	if err := app.requireReady(); err != nil {
+		return schedulersdk.DeadLetter{}, err
+	}
+	return app.binding.ResolveDeadLetter(ctx, id, reason)
 }
 func (s *DatabaseService) RequeueDeadLetter(ctx context.Context, ref schedulersdk.ApplicationRef, id, reason string) (schedulersdk.Run, error) {
-	binding, err := s.binding(ctx, ref)
+	app, err := s.application(ctx, ref)
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
-	return binding.RequeueDeadLetter(ctx, id, reason)
+	if err := app.requireReady(); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	return app.binding.RequeueDeadLetter(ctx, id, reason)
 }
 func (s *DatabaseService) Close(ctx context.Context, ref schedulersdk.ApplicationRef) error {
-	key := strings.TrimSpace(ref.RuntimeID)
-	s.mu.Lock()
-	app := s.applications[key]
-	delete(s.applications, key)
-	s.mu.Unlock()
-	if app == nil {
-		return nil
-	}
-	if app.cancel != nil {
-		app.cancel()
-	}
-	return app.binding.Close(ctx)
+	// Application lifecycle belongs to the Scheduler process. Legacy remote
+	// close requests are intentionally local no-ops and cannot stop a worker.
+	return nil
 }
 
 // Shutdown stops every application worker owned by this SaaS process.
@@ -261,15 +384,7 @@ func (h *databaseApplicationHost) Driver() string                { return h.serv
 func (h *databaseApplicationHost) Schema() string                { return h.service.Schema }
 func (h *databaseApplicationHost) WorkerID() string              { return h.service.WorkerID }
 func (h *databaseApplicationHost) Snapshot(context.Context) (schedulersdk.DefinitionSnapshot, error) {
-	h.application.mu.RLock()
-	defer h.application.mu.RUnlock()
-	return cloneSnapshot(h.application.snapshot), nil
-}
-
-func cloneSnapshot(value schedulersdk.DefinitionSnapshot) schedulersdk.DefinitionSnapshot {
-	out := value
-	out.Definitions = append([]schedulersdk.Definition(nil), value.Definitions...)
-	return out
+	return schedulersdk.DefinitionSnapshot{}, fmt.Errorf("Scheduler SaaS definitions arrive through the fenced publication protocol")
 }
 
 var _ moduleassembly.SaaSHost = (*databaseApplicationHost)(nil)

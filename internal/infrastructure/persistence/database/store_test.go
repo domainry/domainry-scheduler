@@ -2,11 +2,15 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	schedulermodel "github.com/domainry/domainry-scheduler/internal/domain/scheduler/model"
 	_ "modernc.org/sqlite"
 )
@@ -53,8 +57,214 @@ func TestCommandReceiptClaimIsDurableAndRuntimeScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, claimed, err := otherRuntime.ClaimCommand(t.Context(), claim); err != nil || !claimed {
-		t.Fatalf("other runtime claimed=%t err=%v", claimed, err)
+	otherReceipt, claimed, err := otherRuntime.ClaimCommand(t.Context(), claim)
+	if err != nil || !claimed || otherReceipt.Status != schedulermodel.CommandReceiptExecuting || otherReceipt.HTTPStatus != 0 || len(otherReceipt.ResponseJSON) != 0 {
+		t.Fatalf("other runtime receipt=%+v claimed=%t err=%v", otherReceipt, claimed, err)
+	}
+}
+
+func TestDefinitionStoreScopesSameAndDifferentKeysByRuntimeAcrossReopen(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:scheduler-definition-runtime-scope?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
+		t.Fatal(err)
+	}
+	dialect, err := Renderer("sqlite", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeA, err := NewDefinitionStore(db, dialect, "runtime-a", schedulersdk.DeploymentModeModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeB, err := NewDefinitionStore(db, dialect, "runtime-b", schedulersdk.DeploymentModeModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aDefinitions := []schedulersdk.Definition{
+		testDefinition("shared", "run-a", `{"tenant":"a"}`),
+		testDefinition("a-only", "only-a", `{"tenant":"a-only"}`),
+	}
+	bDefinitions := []schedulersdk.Definition{
+		testDefinition("shared", "run-b", `{"tenant":"b"}`),
+		testDefinition("b-only", "only-b", `{"tenant":"b-only"}`),
+	}
+	if err := runtimeA.SyncDefinitions(t.Context(), schedulerpersistence.DefinitionSnapshot{Revision: 1, SchemaVersion: "1", SourceKind: "runtime_host", SourceID: "runtime-a", Definitions: aDefinitions}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtimeB.SyncDefinitions(t.Context(), schedulerpersistence.DefinitionSnapshot{Revision: 2, SchemaVersion: "2", SourceKind: "runtime_host", SourceID: "runtime-b", Definitions: bDefinitions}); err != nil {
+		t.Fatal(err)
+	}
+	assertDefinitionSnapshot(t, runtimeA, "runtime-a", map[string]string{"shared": "run-a", "a-only": "only-a"})
+	assertDefinitionSnapshot(t, runtimeB, "runtime-b", map[string]string{"shared": "run-b", "b-only": "only-b"})
+
+	reopenedA, err := NewDefinitionStore(db, dialect, "runtime-a", schedulersdk.DeploymentModeModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopenedB, err := NewDefinitionStore(db, dialect, "runtime-b", schedulersdk.DeploymentModeModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDefinitionSnapshot(t, reopenedA, "runtime-a", map[string]string{"shared": "run-a", "a-only": "only-a"})
+	assertDefinitionSnapshot(t, reopenedB, "runtime-b", map[string]string{"shared": "run-b", "b-only": "only-b"})
+
+	if err := reopenedB.SyncDefinitions(t.Context(), schedulerpersistence.DefinitionSnapshot{Revision: 3, SchemaVersion: "3", SourceKind: "runtime_host", SourceID: "runtime-a", Definitions: aDefinitions}); err == nil {
+		t.Fatal("runtime-b store accepted runtime-a snapshot")
+	}
+	assertDefinitionSnapshot(t, reopenedA, "runtime-a", map[string]string{"shared": "run-a", "a-only": "only-a"})
+	assertDefinitionSnapshot(t, reopenedB, "runtime-b", map[string]string{"shared": "run-b", "b-only": "only-b"})
+
+	var activeRows, storageKeys int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*), COUNT(DISTINCT resource_key) FROM _scheduler_definitions WHERE disabled_at IS NULL`).Scan(&activeRows, &storageKeys); err != nil {
+		t.Fatal(err)
+	}
+	if activeRows != 4 || storageKeys != 4 {
+		t.Fatalf("active definition rows=%d distinct storage keys=%d", activeRows, storageKeys)
+	}
+}
+
+func TestDefinitionStoreAcceptsChangedSnapshotFromNewProcessLocalRevisionEpoch(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:scheduler-definition-process-epochs?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
+		t.Fatal(err)
+	}
+	dialect, err := Renderer("sqlite", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewDefinitionStore(db, dialect, "runtime-a", schedulersdk.DeploymentModeModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := testDefinition("shared", "revision-7", `{"revision":7}`)
+	if err := store.SyncDefinitions(t.Context(), schedulerpersistence.DefinitionSnapshot{Revision: 7, SchemaVersion: "7", SourceKind: "runtime_host", SourceID: "runtime-a", Definitions: []schedulersdk.Definition{current}}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewDefinitionStore(db, dialect, "runtime-a", schedulersdk.DeploymentModeModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := testDefinition("shared", "changed-after-restart", `{"revision":1,"runtime_restart":true}`)
+	if err := reopened.SyncDefinitions(t.Context(), schedulerpersistence.DefinitionSnapshot{Revision: 1, SchemaVersion: "1", SourceKind: "runtime_host", SourceID: "runtime-a", Definitions: []schedulersdk.Definition{restarted}}); err != nil {
+		t.Fatalf("new Runtime process revision 1 err=%v", err)
+	}
+	snapshot, err := reopened.DefinitionSnapshot(t.Context())
+	if err != nil || snapshot.Revision != 1 || len(snapshot.Definitions) != 1 || snapshot.Definitions[0].Target.Operation != "changed-after-restart" {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
+func TestDefinitionStoreEnforcesDeploymentPublicationBoundary(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:scheduler-definition-mode-boundary?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
+		t.Fatal(err)
+	}
+	dialect, err := Renderer("sqlite", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moduleStore, err := NewDefinitionStore(db, dialect, "runtime-module", schedulersdk.DeploymentModeModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := moduleStore.BeginDefinitionPublisherSession(t.Context()); !errors.Is(err, schedulersdk.ErrDefinitionPublicationCapabilityRequired) {
+		t.Fatalf("Module begin session err=%v", err)
+	}
+	fence := schedulersdk.DefinitionPublisherFence{ContractVersion: schedulersdk.DefinitionPublicationContractVersion, Generation: 1, SessionSHA256: strings.Repeat("a", 64)}
+	if err := moduleStore.SyncDefinitions(t.Context(), schedulerpersistence.DefinitionSnapshot{
+		PublisherFence: &fence, Revision: 1, SchemaVersion: "1", SourceKind: "runtime_host", SourceID: "runtime-module", Definitions: []schedulersdk.Definition{testDefinition("daily", "module", `{}`)},
+	}); err == nil {
+		t.Fatal("Module store accepted a SaaS publisher fence")
+	}
+	saasStore, err := NewDefinitionStore(db, dialect, "runtime-saas", schedulersdk.DeploymentModeSaaS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saasStore.SyncDefinitions(t.Context(), schedulerpersistence.DefinitionSnapshot{
+		Revision: 1, SchemaVersion: "1", SourceKind: "runtime_host", SourceID: "runtime-saas", Definitions: []schedulersdk.Definition{testDefinition("daily", "saas", `{}`)},
+	}); !errors.Is(err, schedulersdk.ErrDefinitionPublicationRequired) {
+		t.Fatalf("SaaS nil fence err=%v", err)
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO _scheduler_definition_publications (
+		source_kind, source_id, active_generation, active_session_sha256, updated_at
+	) VALUES (?, ?, ?, ?, ?)`, "runtime_host", "runtime-limit", int64(1<<53-1), strings.Repeat("b", 64), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	limitStore, err := NewDefinitionStore(db, dialect, "runtime-limit", schedulersdk.DeploymentModeSaaS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := limitStore.BeginDefinitionPublisherSession(t.Context()); err == nil || !strings.Contains(err.Error(), "generation exhausted") {
+		t.Fatalf("generation limit err=%v", err)
+	}
+}
+
+func testDefinition(key, operation, payload string) schedulersdk.Definition {
+	return schedulersdk.Definition{
+		Key: key, Name: key, Revision: "v1", Status: "enabled",
+		Schedule: schedulersdk.Schedule{Type: "interval", IntervalSeconds: 60},
+		Target:   schedulersdk.TargetRef{Type: "runtime_operation", Owner: "workflow", Operation: operation, Payload: json.RawMessage(payload)},
+	}
+}
+
+func assertDefinitionSnapshot(t *testing.T, store DefinitionStore, runtimeID string, expected map[string]string) {
+	t.Helper()
+	snapshot, err := store.DefinitionSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.SourceKind != "runtime_host" || snapshot.SourceID != runtimeID || len(snapshot.Definitions) != len(expected) {
+		t.Fatalf("runtime=%s snapshot=%+v", runtimeID, snapshot)
+	}
+	for _, definition := range snapshot.Definitions {
+		if operation, found := expected[definition.Key]; !found || definition.Target.Operation != operation {
+			t.Fatalf("runtime=%s leaked or overwritten definition=%+v expected=%v", runtimeID, definition, expected)
+		}
+	}
+}
+
+func TestOrdinaryClaimKeepsFractionalScheduleButUsesLegacySecondPrecisionWindow(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:scheduler-ordinary-fractional-window?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
+		t.Fatal(err)
+	}
+	dialect, err := Renderer("sqlite", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(db, dialect, "runtime-a", "machine-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := schedulersdk.Definition{Key: "fractional", Revision: "v1", Status: "enabled", Schedule: schedulersdk.Schedule{Type: "interval", IntervalSeconds: 60}, Target: schedulersdk.TargetRef{Type: "http", ConnectionKey: "downstream", Operation: "sync", DispatchMode: "direct"}}
+	scheduledFor := time.Date(2026, 9, 7, 9, 30, 15, 987654321, time.FixedZone("offset", 8*60*60))
+	run, claimed, err := store.Claim(t.Context(), modulehost.DueTrigger{Definition: definition, ScheduledFor: scheduledFor}, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("run=%+v claimed=%t err=%v", run, claimed, err)
+	}
+	wantWindow := scheduledFor.UTC().Format(time.RFC3339)
+	if !run.Trigger.ScheduledFor.Equal(scheduledFor) || run.Trigger.WindowKey != wantWindow || run.Trigger.WindowKey == scheduledFor.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("run=%+v want window=%q", run, wantWindow)
+	}
+	persisted, err := store.Get(t.Context(), run.Trigger.RunID)
+	if err != nil || !persisted.Trigger.ScheduledFor.Equal(scheduledFor) || persisted.Trigger.WindowKey != wantWindow {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
 	}
 }
 
@@ -132,7 +342,7 @@ func TestStandaloneSchemaMigrationIsIdempotent(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM "_schema_migrations" WHERE "dirty" = FALSE`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 3 {
+	if count != 5 {
 		t.Fatalf("applied migrations=%d", count)
 	}
 	var definitions int

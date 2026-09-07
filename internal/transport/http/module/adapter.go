@@ -63,7 +63,9 @@ func NewAdapter(owner binding, receipts schedulermodel.CommandReceiptStore) (mod
 	if receipts == nil {
 		return nil, errors.New("Scheduler command receipt store is unavailable")
 	}
-	contract, err := schedulersdk.SchedulerHTTPAdapterContract()
+	contract, err := schedulersdk.SchedulerHTTPAdapterContractForTrustedHost(schedulersdk.SchedulerHTTPAuthorizationBoundary{
+		TrustedHumanPrincipal: true, ActionPermissionGuard: true, OperationEvidenceGuard: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -459,25 +461,41 @@ func projectTarget(value schedulersdk.TargetRef) (string, string) {
 }
 
 type runResponse struct {
-	ID             string `json:"id"`
-	DefinitionKey  string `json:"definition_key,omitempty"`
-	Status         string `json:"status"`
-	Attempt        int    `json:"attempt,omitempty"`
-	ScheduledFor   string `json:"scheduled_for,omitempty"`
-	ErrorMessage   string `json:"error_message,omitempty"`
-	LeaseOwner     string `json:"lease_owner,omitempty"`
-	LeaseExpiresAt string `json:"lease_expires_at,omitempty"`
-	FencingToken   int64  `json:"fencing_token,omitempty"`
-	CorrelationID  string `json:"correlation_id,omitempty"`
-	CreatedAt      string `json:"created_at,omitempty"`
-	UpdatedAt      string `json:"updated_at,omitempty"`
+	ID                string                     `json:"id"`
+	DefinitionKey     string                     `json:"definition_key,omitempty"`
+	Status            string                     `json:"status"`
+	Attempt           int                        `json:"attempt,omitempty"`
+	ScheduledFor      string                     `json:"scheduled_for,omitempty"`
+	WindowKey         string                     `json:"window_key,omitempty"`
+	ErrorMessage      string                     `json:"error_message,omitempty"`
+	LeaseOwner        string                     `json:"lease_owner,omitempty"`
+	LeaseExpiresAt    string                     `json:"lease_expires_at,omitempty"`
+	FencingToken      int64                      `json:"fencing_token,omitempty"`
+	CorrelationID     string                     `json:"correlation_id,omitempty"`
+	DownstreamReceipt *downstreamReceiptResponse `json:"downstream_receipt,omitempty"`
+	CreatedAt         string                     `json:"created_at,omitempty"`
+	UpdatedAt         string                     `json:"updated_at,omitempty"`
+}
+
+type downstreamReceiptResponse struct {
+	ID     string `json:"id"`
+	Owner  string `json:"owner,omitempty"`
+	Status string `json:"status"`
+	Replay bool   `json:"replay"`
 }
 
 func projectRun(value schedulersdk.Run) runResponse {
 	return runResponse{ID: value.Trigger.RunID, DefinitionKey: value.Trigger.DefinitionKey, Status: value.Status,
-		Attempt: value.Trigger.Attempt, ScheduledFor: formatTime(value.Trigger.ScheduledFor), ErrorMessage: value.LastError,
+		Attempt: value.Trigger.Attempt, ScheduledFor: formatTime(value.Trigger.ScheduledFor), WindowKey: value.Trigger.WindowKey, ErrorMessage: value.LastError,
 		LeaseOwner: value.Lease.Owner, LeaseExpiresAt: formatTime(value.Lease.ExpiresAt), FencingToken: value.Lease.Token,
-		CorrelationID: value.DownstreamReceipt.ID, CreatedAt: formatTime(value.CreatedAt), UpdatedAt: formatTime(value.UpdatedAt)}
+		CorrelationID: value.DownstreamReceipt.ID, DownstreamReceipt: projectDownstreamReceipt(value.DownstreamReceipt), CreatedAt: formatTime(value.CreatedAt), UpdatedAt: formatTime(value.UpdatedAt)}
+}
+
+func projectDownstreamReceipt(value schedulersdk.DownstreamReceipt) *downstreamReceiptResponse {
+	if strings.TrimSpace(value.ID) == "" {
+		return nil
+	}
+	return &downstreamReceiptResponse{ID: value.ID, Owner: value.Owner, Status: value.Status, Replay: value.Replay}
 }
 
 type deadLetterResponse struct {

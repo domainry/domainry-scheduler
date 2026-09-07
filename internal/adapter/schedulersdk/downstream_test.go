@@ -8,7 +8,9 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/dispatchgateway"
 )
 
-type gatewayStub struct{ request dispatchgateway.Request }
+type gatewayStub struct {
+	request dispatchgateway.Request
+}
 
 func (g *gatewayStub) Dispatch(_ context.Context, _ schedulersdk.ApplicationRef, request dispatchgateway.Request) (dispatchgateway.Receipt, error) {
 	g.request = request

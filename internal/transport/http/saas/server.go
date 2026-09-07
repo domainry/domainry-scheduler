@@ -2,7 +2,11 @@ package saas
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +19,7 @@ import (
 
 type Service interface {
 	Descriptor(context.Context, schedulersdk.ApplicationRef) (schedulersdk.Descriptor, error)
+	BeginDefinitionPublisherSession(context.Context, schedulersdk.ApplicationRef) (schedulersdk.DefinitionPublisherSession, error)
 	Reconcile(context.Context, schedulersdk.ApplicationRef, schedulersdk.DefinitionSnapshot) error
 	Preview(context.Context, schedulersdk.ApplicationRef, schedulersdk.Schedule, time.Time, int) ([]time.Time, error)
 	Tick(context.Context, schedulersdk.ApplicationRef, time.Time, int) (int, error)
@@ -32,17 +37,49 @@ type Service interface {
 }
 
 type Options struct {
-	BearerToken string
-	Service     Service
+	// ApplicationTokens binds each private Runtime credential to exactly one
+	// Scheduler application. Request headers and URL parameters never select an
+	// application independently of this authenticated identity.
+	ApplicationTokens map[string]string
+	Service           Service
 }
 
 type Server struct {
-	token      string
-	service    Service
-	capability http.Handler
+	credentials []applicationCredential
+	service     Service
+	capability  http.Handler
+}
+
+type applicationCredential struct {
+	application schedulersdk.ApplicationRef
+	tokenDigest [sha256.Size]byte
 }
 
 func New(options Options) (*Server, error) {
+	if options.Service == nil {
+		return nil, fmt.Errorf("Scheduler service is required")
+	}
+	credentials := make([]applicationCredential, 0, len(options.ApplicationTokens))
+	owners := make(map[[sha256.Size]byte]string, len(options.ApplicationTokens))
+	for runtimeID, rawToken := range options.ApplicationTokens {
+		application := schedulersdk.ApplicationRef{RuntimeID: strings.TrimSpace(runtimeID)}
+		if err := application.Validate(); err != nil {
+			return nil, fmt.Errorf("Scheduler SaaS application credential has invalid Runtime identity: %w", err)
+		}
+		token := strings.TrimSpace(rawToken)
+		if token == "" {
+			return nil, fmt.Errorf("Scheduler SaaS application credential for %q is empty", application.RuntimeID)
+		}
+		digest := sha256.Sum256([]byte(token))
+		if owner := owners[digest]; owner != "" && owner != application.RuntimeID {
+			return nil, fmt.Errorf("Scheduler SaaS bearer credential cannot be shared by Runtime %q and %q", owner, application.RuntimeID)
+		}
+		owners[digest] = application.RuntimeID
+		credentials = append(credentials, applicationCredential{application: application, tokenDigest: digest})
+	}
+	if len(credentials) == 0 {
+		return nil, fmt.Errorf("Scheduler SaaS application credentials are required")
+	}
 	binding, err := capability.NewBinding()
 	if err != nil {
 		return nil, err
@@ -51,16 +88,21 @@ func New(options Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{token: strings.TrimSpace(options.BearerToken), service: options.Service, capability: handler}, nil
+	return &Server{credentials: credentials, service: options.Service, capability: handler}, nil
 }
 func (s *Server) Routes() http.Handler { return s }
 
 func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
-	if s.service == nil {
-		http.Error(response, "Scheduler service unavailable", http.StatusServiceUnavailable)
+	// The source-owned Action adapter is safe in Module mode because Runtime's
+	// listener applies the Action permission and operation guards. Standalone
+	// SaaS has no equivalent trusted human principal contract, so it must not
+	// mount the /scheduler surface behind a machine credential.
+	if request.URL.Path == "/scheduler" || strings.HasPrefix(request.URL.Path, "/scheduler/") {
+		http.NotFound(response, request)
 		return
 	}
-	if s.token != "" && request.Header.Get("Authorization") != "Bearer "+s.token {
+	authenticated, ok := s.authenticate(request)
+	if !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -73,11 +115,18 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		http.NotFound(response, request)
 		return
 	}
-	application := schedulersdk.ApplicationRef{RuntimeID: parts[2]}
-	if application.Validate() != nil {
+	requested := schedulersdk.ApplicationRef{RuntimeID: strings.TrimSpace(parts[2])}
+	if requested.Validate() != nil {
 		http.Error(response, "invalid application", http.StatusBadRequest)
 		return
 	}
+	if requested.RuntimeID != authenticated.RuntimeID {
+		http.Error(response, "forbidden", http.StatusForbidden)
+		return
+	}
+	// Pass only the identity resolved from the credential. The path and legacy
+	// X-Domainry-Runtime-ID header are never application-selection authority.
+	application := authenticated
 	resource := parts[3]
 	var value any
 	var err error
@@ -114,6 +163,11 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 				return
 			}
 		}
+	case "definition-publication-sessions":
+		if len(parts) != 4 || request.Method != http.MethodPost {
+			break
+		}
+		value, err = s.service.BeginDefinitionPublisherSession(request.Context(), application)
 	case "preview":
 		if request.Method != http.MethodPost {
 			break
@@ -216,11 +270,9 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			}
 		}
 	case "binding":
-		if request.Method != http.MethodDelete {
-			break
-		}
-		err = s.service.Close(request.Context(), application)
-		if err == nil {
+		// Retained as a no-op only for rolling clients. Publisher sessions fence
+		// configuration; a stale Runtime must not own Scheduler worker lifetime.
+		if request.Method == http.MethodDelete {
 			response.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -229,6 +281,14 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if err != nil {
+		if errors.Is(err, schedulersdk.ErrDefinitionPublicationRequired) {
+			http.Error(response, "Scheduler definition publisher session required", http.StatusBadRequest)
+			return
+		}
+		if errors.Is(err, schedulersdk.ErrDefinitionPublicationSessionMismatch) || errors.Is(err, schedulersdk.ErrDefinitionSnapshotStale) || errors.Is(err, schedulersdk.ErrDefinitionSnapshotConflict) {
+			http.Error(response, "Scheduler definition publication rejected", http.StatusConflict)
+			return
+		}
 		http.Error(response, "Scheduler request failed", http.StatusBadGateway)
 		return
 	}
@@ -238,6 +298,29 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	}
 	response.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(response).Encode(value)
+}
+
+func (s *Server) authenticate(request *http.Request) (schedulersdk.ApplicationRef, bool) {
+	const prefix = "Bearer "
+	authorization := request.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, prefix) {
+		return schedulersdk.ApplicationRef{}, false
+	}
+	presented := strings.TrimPrefix(authorization, prefix)
+	if presented == "" {
+		return schedulersdk.ApplicationRef{}, false
+	}
+	presentedDigest := sha256.Sum256([]byte(presented))
+	matched := -1
+	for index, credential := range s.credentials {
+		if subtle.ConstantTimeCompare(presentedDigest[:], credential.tokenDigest[:]) == 1 {
+			matched = index
+		}
+	}
+	if matched < 0 {
+		return schedulersdk.ApplicationRef{}, false
+	}
+	return s.credentials[matched].application, true
 }
 
 func decode(response http.ResponseWriter, request *http.Request, target any) bool {

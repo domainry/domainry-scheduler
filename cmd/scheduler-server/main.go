@@ -44,17 +44,15 @@ func run() error {
 		return err
 	}
 	defer database.Close()
-	gateway, err := dispatchgateway.NewRemote(dispatchgateway.RemoteConfig{
-		BaseURL: config.runtimeEndpoint, SigningSecret: config.runtimeSigningSecret,
-		RequestTimeout: config.gatewayTimeout, MaxAttempts: config.gatewayAttempts,
-	})
+	gateway, err := newDispatchGateway(config)
 	if err != nil {
 		return err
 	}
 	service, err := saasassembly.NewDatabaseService(saasassembly.DatabaseServiceOptions{
 		Context: ctx, Database: database, Driver: config.storeDriver, Schema: config.databaseSchema,
 		WorkerID: config.workerID, Worker: schedulersdk.WorkerConfig{Enabled: true, PollInterval: config.workerPollInterval, BatchSize: config.workerBatchSize},
-		Downstreams: schedulersdkadapter.RemoteDownstreams(gateway),
+		Applications: []schedulersdk.ApplicationRef{{RuntimeID: config.runtimeID}},
+		Downstreams:  schedulersdkadapter.RemoteDownstreams(gateway),
 	})
 	if err != nil {
 		return err
@@ -63,7 +61,7 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /live", func(response http.ResponseWriter, _ *http.Request) { response.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /ready", func(response http.ResponseWriter, _ *http.Request) { response.WriteHeader(http.StatusNoContent) })
-	schedulerHandler, err := saashttp.New(saashttp.Options{BearerToken: config.bearerToken, Service: service})
+	schedulerHandler, err := saashttp.New(saashttp.Options{ApplicationTokens: map[string]string{config.runtimeID: config.bearerToken}, Service: service})
 	if err != nil {
 		return err
 	}
@@ -87,20 +85,27 @@ func run() error {
 	}
 }
 
+func newDispatchGateway(config configuration) (*dispatchgateway.Remote, error) {
+	return dispatchgateway.NewRemote(dispatchgateway.RemoteConfig{
+		BaseURL: config.runtimeEndpoint, RuntimeID: config.runtimeID, SigningSecret: config.runtimeSigningSecret,
+		RequestTimeout: config.gatewayTimeout, MaxAttempts: config.gatewayAttempts,
+	})
+}
+
 type configuration struct {
-	httpAddress, sqlDriver, storeDriver, databaseDSN, databaseSchema string
-	workerID, bearerToken, runtimeEndpoint, runtimeSigningSecret     string
-	databaseMaxOpen, databaseMaxIdle, workerBatchSize                int
-	databaseConnLifetime, databaseLockTimeout, workerPollInterval    time.Duration
-	gatewayTimeout                                                   time.Duration
-	gatewayAttempts                                                  int
+	httpAddress, sqlDriver, storeDriver, databaseDSN, databaseSchema        string
+	workerID, runtimeID, bearerToken, runtimeEndpoint, runtimeSigningSecret string
+	databaseMaxOpen, databaseMaxIdle, workerBatchSize                       int
+	databaseConnLifetime, databaseLockTimeout, workerPollInterval           time.Duration
+	gatewayTimeout                                                          time.Duration
+	gatewayAttempts                                                         int
 }
 
 func configurationFromEnvironment() (configuration, error) {
 	value := configuration{
 		httpAddress: env("SCHEDULER_HTTP_ADDRESS", ":8080"),
 		databaseDSN: strings.TrimSpace(os.Getenv("SCHEDULER_DATABASE_DSN")), databaseSchema: strings.TrimSpace(os.Getenv("SCHEDULER_DATABASE_SCHEMA")),
-		workerID: strings.TrimSpace(os.Getenv("SCHEDULER_WORKER_ID")), bearerToken: strings.TrimSpace(os.Getenv("SCHEDULER_SAAS_TOKEN")),
+		workerID: strings.TrimSpace(os.Getenv("SCHEDULER_WORKER_ID")), runtimeID: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_ID")), bearerToken: strings.TrimSpace(os.Getenv("SCHEDULER_SAAS_TOKEN")),
 		runtimeEndpoint: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_ENDPOINT")), runtimeSigningSecret: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_SIGNING_SECRET")),
 		databaseMaxOpen: 20, databaseMaxIdle: 10, databaseConnLifetime: 30 * time.Minute, databaseLockTimeout: 5 * time.Second,
 		workerPollInterval: time.Second, workerBatchSize: 100, gatewayTimeout: 10 * time.Second, gatewayAttempts: 3,
@@ -125,8 +130,8 @@ func configurationFromEnvironment() (configuration, error) {
 		}
 		value.workerBatchSize = parsed
 	}
-	if value.databaseDSN == "" || value.workerID == "" || value.bearerToken == "" || value.runtimeEndpoint == "" || value.runtimeSigningSecret == "" {
-		return configuration{}, fmt.Errorf("Scheduler SaaS database, worker, bearer token and Runtime callback configuration are required")
+	if value.databaseDSN == "" || value.workerID == "" || value.runtimeID == "" || value.bearerToken == "" || value.runtimeEndpoint == "" || value.runtimeSigningSecret == "" {
+		return configuration{}, fmt.Errorf("Scheduler SaaS database, worker, Runtime identity, bearer token and Runtime callback configuration are required")
 	}
 	return value, nil
 }

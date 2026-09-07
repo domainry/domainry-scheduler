@@ -3,15 +3,56 @@ package capability
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/domainry/domainry-foundation/modulecapability"
 	"github.com/domainry/domainry-foundation/modulecapability/contracttest"
+	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	capabilitycontract "github.com/domainry/domainry-scheduler-sdk/authoring/contract"
 )
+
+func TestSchedulerCapabilityPublishesCompleteSDKOperations(t *testing.T) {
+	binding, err := NewBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := schedulersdk.SchedulerHTTPOpenAPIOperations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := binding.CapabilitySummary(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, category := range summary.Categories {
+		document, err := binding.CapabilityCategory(t.Context(), category.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for path, methods := range document.OpenAPI.Paths {
+			for method, raw := range methods {
+				var operation map[string]any
+				if err := json.Unmarshal(raw, &operation); err != nil {
+					t.Fatal(err)
+				}
+				delete(operation, modulecapability.OperationExtensionKey)
+				assertCapabilityCanonicalEqual(t, operation, want[strings.ToUpper(method)+" "+path])
+				count++
+			}
+		}
+	}
+	if count != len(want) {
+		t.Fatalf("capability operations=%d SDK operations=%d", count, len(want))
+	}
+}
 
 func TestSchedulerCapabilityTracksExternalRoutesAuthoringAndValidation(t *testing.T) {
 	binding, err := NewBinding()
@@ -39,7 +80,83 @@ func TestSchedulerCapabilityTracksExternalRoutesAuthoringAndValidation(t *testin
 	if err != nil || len(result.Diagnostics) != 1 || result.Diagnostics[0].RuleKey != "backend.scheduler.interval_invalid" || result.Diagnostics[0].FieldPath != "$.candidate.value.schedule.interval_seconds" {
 		t.Fatalf("Scheduler diagnostics=%+v err=%v", result.Diagnostics, err)
 	}
-	contracttest.VerifyModuleRemoteParity(t, binding, contracttest.ValidationCase{Name: "invalid interval", Request: request})
+	verifyCapabilityRemoteParityWithoutListener(t, binding, request)
+}
+
+type capabilityHandlerTransport struct{ handler http.Handler }
+
+func (t capabilityHandlerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	t.handler.ServeHTTP(response, request)
+	return response.Result(), nil
+}
+
+func verifyCapabilityRemoteParityWithoutListener(t *testing.T, direct modulecapability.Binding, validationRequest modulecapability.ValidationRequest) {
+	t.Helper()
+	directSummary, err := direct.CapabilitySummary(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := modulecapability.NewHTTPHandler(direct, func(request *http.Request) error {
+		if request.Header.Get("X-Domainry-Capability-Test") != directSummary.Identity.Key {
+			return &modulecapability.Error{StatusCode: http.StatusUnauthorized, Code: "module_capability.service_authentication_required"}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: capabilityHandlerTransport{handler: handler}}
+	open := func(hash string) (modulecapability.Binding, error) {
+		return modulecapability.OpenRemote(t.Context(), modulecapability.RemoteConfig{
+			BaseURL: "http://scheduler-capability.test", Client: client, ExpectedModuleKey: directSummary.Identity.Key, ExpectedContractSHA256: hash,
+			Authorize: func(request *http.Request) error {
+				request.Header.Set("X-Domainry-Capability-Test", directSummary.Identity.Key)
+				return nil
+			},
+		})
+	}
+	remote, err := open(directSummary.Identity.ContractSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := open(strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "module_capability.contract_mismatch") {
+		t.Fatalf("Remote binding accepted a stale capability digest: %v", err)
+	}
+	remoteSummary, err := remote.CapabilitySummary(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCapabilityCanonicalEqual(t, directSummary, remoteSummary)
+	for _, category := range directSummary.Categories {
+		directDocument, directErr := direct.CapabilityCategory(t.Context(), category.Key)
+		remoteDocument, remoteErr := remote.CapabilityCategory(t.Context(), category.Key)
+		if directErr != nil || remoteErr != nil {
+			t.Fatalf("category %q direct=%v remote=%v", category.Key, directErr, remoteErr)
+		}
+		assertCapabilityCanonicalEqual(t, directDocument, remoteDocument)
+	}
+	directResult, directErr := direct.ValidateCapabilityCandidate(t.Context(), validationRequest)
+	remoteResult, remoteErr := remote.ValidateCapabilityCandidate(t.Context(), validationRequest)
+	if fmt.Sprint(directErr) != fmt.Sprint(remoteErr) {
+		t.Fatalf("validation errors differ: direct=%v remote=%v", directErr, remoteErr)
+	}
+	assertCapabilityCanonicalEqual(t, directResult, remoteResult)
+}
+
+func assertCapabilityCanonicalEqual(t *testing.T, left, right any) {
+	t.Helper()
+	leftBytes, err := modulecapability.CanonicalJSON(left)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightBytes, err := modulecapability.CanonicalJSON(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(leftBytes, rightBytes) {
+		t.Fatalf("canonical values differ\nleft:  %s\nright: %s", leftBytes, rightBytes)
+	}
 }
 
 func TestSchedulerBlueprintSourceProjectionMatchesOwnerValidator(t *testing.T) {
