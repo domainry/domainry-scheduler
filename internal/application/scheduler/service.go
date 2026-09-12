@@ -37,6 +37,7 @@ type Service struct {
 	reconcileGeneration  atomic.Uint64
 	definitions          map[string]schedulersdk.Definition
 	leaseTTL             time.Duration
+	dispatchTimeout      time.Duration
 	lifecycleMu          sync.Mutex
 	workerDone           chan struct{}
 	closed               bool
@@ -60,7 +61,11 @@ func NewService(ctx context.Context, cancel context.CancelFunc, application sche
 	if len(capabilities) != 0 {
 		capability = capabilities[0]
 	}
-	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute, capability: capability, now: time.Now}
+	defaults := schedulersdk.NormalizeWorkerConfig(schedulersdk.WorkerConfig{})
+	if backlog, ok := runs.(modulehost.TriggerBacklogStore); ok {
+		_ = backlog.ConfigureTriggerBacklogLimit(defaults.MaxPendingTriggers)
+	}
+	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: defaults.LeaseTTL, dispatchTimeout: defaults.DispatchTimeout, capability: capability, now: time.Now}
 }
 
 func (b *Service) CapabilitySummary(ctx context.Context) (modulecapability.ModuleSummary, error) {
@@ -83,7 +88,7 @@ func (b *Service) ValidateCapabilityCandidate(ctx context.Context, request modul
 }
 
 func (b *Service) Descriptor() schedulersdk.Descriptor {
-	capabilities := []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityScheduledPlanRecords}
+	capabilities := []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityScheduledPlanRecords, schedulersdk.CapabilityTriggerBacklog}
 	if b.mode == schedulersdk.DeploymentModeSaaS {
 		capabilities = append(capabilities, schedulersdk.CapabilityDefinitionPublicationFencing)
 	}
@@ -386,11 +391,11 @@ func (b *Service) dispatch(ctx context.Context, item modulehost.DueTrigger) erro
 }
 
 func (b *Service) dispatchClaimed(ctx context.Context, run schedulersdk.Run, definition schedulersdk.Definition) error {
-	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
-	cancel := func() { cancelDispatch() }
-	if definition.Policy.Timeout > 0 {
-		dispatchCtx, cancel = context.WithTimeout(dispatchCtx, definition.Policy.Timeout)
+	timeout := b.currentDispatchTimeout()
+	if definition.Policy.Timeout > 0 && definition.Policy.Timeout < timeout {
+		timeout = definition.Policy.Timeout
 	}
+	dispatchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	workCtx := dispatchCtx
 	stopHeartbeat := func() error { return nil }
@@ -437,6 +442,20 @@ func (b *Service) currentLeaseTTL() time.Duration {
 	return b.leaseTTL
 }
 
+func (b *Service) currentDispatchTimeout() time.Duration {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.dispatchTimeout
+}
+
+func (b *Service) TriggerBacklog(ctx context.Context) (schedulersdk.TriggerBacklog, error) {
+	backlog, ok := b.runs.(modulehost.TriggerBacklogStore)
+	if !ok {
+		return schedulersdk.TriggerBacklog{}, fmt.Errorf("Scheduler trigger backlog is unavailable")
+	}
+	return backlog.TriggerBacklog(ctx)
+}
+
 func (b *Service) Runs(ctx context.Context, limit int) ([]schedulersdk.Run, error) {
 	return b.runs.List(ctx, limit)
 }
@@ -470,7 +489,6 @@ func (b *Service) Start(ctx context.Context, config schedulersdk.WorkerConfig) <
 	if ctx == nil || ctx.Err() != nil {
 		return closedLifecycleDone()
 	}
-
 	// One Start call owns each live worker generation. Concurrent calls join
 	// that generation and receive the same completion signal; after its caller
 	// context is canceled and done closes, a later Start creates a new one.
@@ -484,8 +502,15 @@ func (b *Service) Start(ctx context.Context, config schedulersdk.WorkerConfig) <
 		b.lifecycleMu.Unlock()
 		return done
 	}
+	if backlog, ok := b.runs.(modulehost.TriggerBacklogStore); ok {
+		if err := backlog.ConfigureTriggerBacklogLimit(config.MaxPendingTriggers); err != nil {
+			b.lifecycleMu.Unlock()
+			return closedLifecycleDone()
+		}
+	}
 	b.mu.Lock()
 	b.leaseTTL = config.LeaseTTL
+	b.dispatchTimeout = config.DispatchTimeout
 	b.mu.Unlock()
 	done := make(chan struct{})
 	runCtx, cancel := context.WithCancel(ctx)
@@ -496,6 +521,8 @@ func (b *Service) Start(ctx context.Context, config schedulersdk.WorkerConfig) <
 	go b.runWorker(runCtx, cancel, stopOwnerCancellation, config, done)
 	return done
 }
+
+var _ schedulersdk.TriggerBacklogProvider = (*Service)(nil)
 
 func (b *Service) runWorker(ctx context.Context, cancel context.CancelFunc, stopOwnerCancellation func() bool, config schedulersdk.WorkerConfig, done chan struct{}) {
 	defer func() {

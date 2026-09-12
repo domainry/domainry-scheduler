@@ -371,6 +371,10 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if err != nil {
+		if errors.Is(err, schedulersdk.ErrTriggerBacklogFull) {
+			http.Error(response, "Scheduler trigger backlog is full", http.StatusTooManyRequests)
+			return
+		}
 		if errors.Is(err, schedulersdk.ErrScheduledPlanInvalid) {
 			http.Error(response, "Scheduler plan is invalid", http.StatusBadRequest)
 			return

@@ -50,7 +50,7 @@ func run() error {
 	}
 	service, err := saasassembly.NewDatabaseService(saasassembly.DatabaseServiceOptions{
 		Context: ctx, Database: database, Driver: config.storeDriver, Schema: config.databaseSchema,
-		WorkerID: config.workerID, Worker: schedulersdk.WorkerConfig{Enabled: true, PollInterval: config.workerPollInterval, BatchSize: config.workerBatchSize},
+		WorkerID: config.workerID, Worker: schedulersdk.WorkerConfig{Enabled: true, PollInterval: config.workerPollInterval, BatchSize: config.workerBatchSize, MaxPendingTriggers: config.maxPendingTriggers, DispatchTimeout: config.dispatchTimeout},
 		Applications: []schedulersdk.ApplicationRef{{RuntimeID: config.runtimeID}},
 		Downstreams:  schedulersdkadapter.RemoteDownstreams(gateway),
 	})
@@ -95,9 +95,9 @@ func newDispatchGateway(config configuration) (*dispatchgateway.Remote, error) {
 type configuration struct {
 	httpAddress, sqlDriver, storeDriver, databaseDSN, databaseSchema        string
 	workerID, runtimeID, bearerToken, runtimeEndpoint, runtimeSigningSecret string
-	databaseMaxOpen, databaseMaxIdle, workerBatchSize                       int
+	databaseMaxOpen, databaseMaxIdle, workerBatchSize, maxPendingTriggers   int
 	databaseConnLifetime, databaseLockTimeout, workerPollInterval           time.Duration
-	gatewayTimeout                                                          time.Duration
+	gatewayTimeout, dispatchTimeout                                         time.Duration
 	gatewayAttempts                                                         int
 }
 
@@ -108,7 +108,7 @@ func configurationFromEnvironment() (configuration, error) {
 		workerID: strings.TrimSpace(os.Getenv("SCHEDULER_WORKER_ID")), runtimeID: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_ID")), bearerToken: strings.TrimSpace(os.Getenv("SCHEDULER_SAAS_TOKEN")),
 		runtimeEndpoint: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_ENDPOINT")), runtimeSigningSecret: strings.TrimSpace(os.Getenv("SCHEDULER_RUNTIME_SIGNING_SECRET")),
 		databaseMaxOpen: 20, databaseMaxIdle: 10, databaseConnLifetime: 30 * time.Minute, databaseLockTimeout: 5 * time.Second,
-		workerPollInterval: time.Second, workerBatchSize: 100, gatewayTimeout: 10 * time.Second, gatewayAttempts: 3,
+		workerPollInterval: time.Second, workerBatchSize: 100, maxPendingTriggers: 10_000, gatewayTimeout: 10 * time.Second, dispatchTimeout: 5 * time.Minute, gatewayAttempts: 3,
 	}
 	switch strings.ToLower(env("SCHEDULER_DATABASE_DRIVER", "sqlite")) {
 	case "sqlite":
@@ -129,6 +129,20 @@ func configurationFromEnvironment() (configuration, error) {
 			return configuration{}, fmt.Errorf("SCHEDULER_WORKER_BATCH_SIZE must be positive")
 		}
 		value.workerBatchSize = parsed
+	}
+	if raw := strings.TrimSpace(os.Getenv("SCHEDULER_MAX_PENDING_TRIGGERS")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 1_000_000 {
+			return configuration{}, fmt.Errorf("SCHEDULER_MAX_PENDING_TRIGGERS must be between 1 and 1000000")
+		}
+		value.maxPendingTriggers = parsed
+	}
+	if raw := strings.TrimSpace(os.Getenv("SCHEDULER_DISPATCH_TIMEOUT")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 || parsed > 30*time.Minute {
+			return configuration{}, fmt.Errorf("SCHEDULER_DISPATCH_TIMEOUT must be between 1ns and 30m")
+		}
+		value.dispatchTimeout = parsed
 	}
 	if value.databaseDSN == "" || value.workerID == "" || value.runtimeID == "" || value.bearerToken == "" || value.runtimeEndpoint == "" || value.runtimeSigningSecret == "" {
 		return configuration{}, fmt.Errorf("Scheduler SaaS database, worker, Runtime identity, bearer token and Runtime callback configuration are required")

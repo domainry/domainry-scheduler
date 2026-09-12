@@ -8,7 +8,7 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
 
-const SchemaVersion uint = 7
+const SchemaVersion uint = 8
 
 type Migration = ormmigration.Migration
 
@@ -84,6 +84,12 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build Scheduler definition state source column: %w", err)
 	}
+	capacityGuardStatement, _, err := ormschema.NewTable(r, "_scheduler_capacity_guards").IfNotExists().Columns(
+		required("runtime_id", ormschema.TextKey(191)), required("revision", ormschema.BigInt()),
+	).PrimaryKey("runtime_id").Build()
+	if err != nil {
+		return nil, fmt.Errorf("build Scheduler capacity guard table: %w", err)
+	}
 	return []modulehost.SchemaMigration{
 		{Version: 1, Name: "scheduler_foundation", Statements: statements},
 		{Version: 2, Name: "scheduler_definition_ownership", Statements: []string{definitionStatement}},
@@ -92,6 +98,7 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 		{Version: 5, Name: "scheduler_definition_publication_fencing", Statements: []string{definitionPublicationStatement}},
 		{Version: 6, Name: "scheduler_owned_plans", Statements: []string{scheduledPlanStatement}},
 		{Version: 7, Name: "scheduler_definition_state_sources", Statements: []string{definitionStateSource}},
+		{Version: 8, Name: "scheduler_trigger_capacity", Statements: []string{capacityGuardStatement}},
 	}, nil
 }
 

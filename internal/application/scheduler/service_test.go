@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -513,6 +514,26 @@ func TestDispatchCancelsWhenDatabaseLeaseIsLost(t *testing.T) {
 	_, err := apiBinding.Tick(t.Context(), now, 1)
 	if err == nil || host.renewed == 0 || host.accepted != 0 {
 		t.Fatalf("err=%v renewed=%d accepted=%d", err, host.renewed, host.accepted)
+	}
+}
+
+func TestDispatchUsesSchedulerOwnerTimeoutWhenDefinitionHasNone(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	definition := testServiceDefinition("bounded", "run")
+	host := &hostStub{definition: definition, due: []modulehost.DueTrigger{{Definition: definition, ScheduledFor: now}}}
+	host.dispatchFn = func(ctx context.Context) (schedulersdk.DownstreamReceipt, error) {
+		<-ctx.Done()
+		return schedulersdk.DownstreamReceipt{}, ctx.Err()
+	}
+	ownerCtx, cancel := context.WithCancel(t.Context())
+	service := NewService(ownerCtx, cancel, schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, host, host, host, host, schedulersdk.DeploymentModeModule)
+	service.mu.Lock()
+	service.dispatchTimeout = 25 * time.Millisecond
+	service.mu.Unlock()
+	started := time.Now()
+	processed, err := service.Tick(t.Context(), now, 1)
+	if !errors.Is(err, context.DeadlineExceeded) || processed != 0 || time.Since(started) > time.Second || host.accepted != 0 {
+		t.Fatalf("processed=%d elapsed=%s accepted=%d err=%v", processed, time.Since(started), host.accepted, err)
 	}
 }
 func (*hostStub) ResolveHTTPConnection(context.Context, string) (modulehost.HTTPConnection, error) {

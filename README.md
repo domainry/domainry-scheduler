@@ -52,6 +52,8 @@ The standalone server uses:
 - `SCHEDULER_WORKER_ID`
 - `SCHEDULER_RUNTIME_ID` (the sole Runtime identity bound to this process token)
 - `SCHEDULER_WORKER_BATCH_SIZE` (default `100`)
+- `SCHEDULER_MAX_PENDING_TRIGGERS` (default `10000`, maximum `1000000`)
+- `SCHEDULER_DISPATCH_TIMEOUT` (default `5m`, maximum `30m`)
 
 For a single-Runtime Scheduler SaaS process, the callback gateway can be
 configured with:
@@ -92,6 +94,16 @@ transport rather than importing the server implementation.
   - `direct` uses Scheduler's HTTP executor, with idempotency/window headers, bounded responses, HMAC signing and retry classification.
 
 Definitions are configuration. A successful downstream call must return a durable receipt before a run is accepted.
+
+Leased and retrying runs form the Scheduler-owned trigger backlog. New claims
+serialize a database count with insertion through the Runtime-scoped
+`_scheduler_capacity_guards` row, so multiple workers cannot each admit past
+the configured limit. Existing windows and expired leases remain idempotent,
+and another Runtime has an independent backlog. The optional SDK
+`TriggerBacklogProvider` reports the current pending count and limit. Every
+dispatch receives the smaller of the definition timeout and the Scheduler
+worker timeout; a definition without a timeout still receives the worker
+timeout. Downstream Agent task capacity remains owned and counted by Agent.
 
 Runtime-operation target semantics remain downstream-owner concerns. The
 current shared authoring contract exposes scheduled Workflow dispatch and

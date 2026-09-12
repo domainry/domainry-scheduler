@@ -569,6 +569,10 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": code, "params": schedule.ValidationParams(err)})
 		return
 	}
+	if errors.Is(err, schedulersdk.ErrTriggerBacklogFull) {
+		writeError(w, http.StatusTooManyRequests, "backend.scheduler.trigger_backlog_full")
+		return
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		writeError(w, http.StatusServiceUnavailable, "backend.scheduler.request_cancelled")
 		return

@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestConfigurationFromEnvironmentBuildsSQLiteDefaults(t *testing.T) {
@@ -17,11 +18,34 @@ func TestConfigurationFromEnvironmentBuildsSQLiteDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.sqlDriver != "sqlite" || config.storeDriver != "sqlite" || config.databaseDSN != "scheduler.db" || config.httpAddress != ":8080" {
+	if config.sqlDriver != "sqlite" || config.storeDriver != "sqlite" || config.databaseDSN != "scheduler.db" || config.httpAddress != ":8080" || config.maxPendingTriggers != 10_000 || config.dispatchTimeout != 5*time.Minute {
 		t.Fatalf("unexpected configuration: %+v", config)
 	}
 	if _, err := newDispatchGateway(config); err != nil {
 		t.Fatalf("build Runtime-bound dispatch gateway: %v", err)
+	}
+}
+
+func TestConfigurationFromEnvironmentValidatesCapacityAndDispatchTimeout(t *testing.T) {
+	for key, value := range map[string]string{
+		"SCHEDULER_DATABASE_DRIVER": "sqlite", "SCHEDULER_WORKER_ID": "worker-a", "SCHEDULER_RUNTIME_ID": "runtime-a",
+		"SCHEDULER_SAAS_TOKEN": "token", "SCHEDULER_RUNTIME_ENDPOINT": "https://runtime.example", "SCHEDULER_RUNTIME_SIGNING_SECRET": "secret",
+		"SCHEDULER_MAX_PENDING_TRIGGERS": "77", "SCHEDULER_DISPATCH_TIMEOUT": "45s",
+	} {
+		t.Setenv(key, value)
+	}
+	config, err := configurationFromEnvironment()
+	if err != nil || config.maxPendingTriggers != 77 || config.dispatchTimeout != 45*time.Second {
+		t.Fatalf("config=%+v err=%v", config, err)
+	}
+	t.Setenv("SCHEDULER_MAX_PENDING_TRIGGERS", "0")
+	if _, err = configurationFromEnvironment(); err == nil {
+		t.Fatal("zero trigger backlog limit accepted")
+	}
+	t.Setenv("SCHEDULER_MAX_PENDING_TRIGGERS", "77")
+	t.Setenv("SCHEDULER_DISPATCH_TIMEOUT", "31m")
+	if _, err = configurationFromEnvironment(); err == nil {
+		t.Fatal("unbounded dispatch timeout accepted")
 	}
 }
 

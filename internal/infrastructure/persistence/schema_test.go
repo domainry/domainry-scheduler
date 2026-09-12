@@ -15,7 +15,7 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(migrations) != 7 || len(migrations[0].Statements) != 4 || len(migrations[1].Statements) != 1 || len(migrations[2].Statements) != 1 || len(migrations[3].Statements) != 1 || len(migrations[4].Statements) != 1 || len(migrations[5].Statements) != 1 || len(migrations[6].Statements) != 1 {
+			if len(migrations) != 8 || len(migrations[0].Statements) != 4 || len(migrations[1].Statements) != 1 || len(migrations[2].Statements) != 1 || len(migrations[3].Statements) != 1 || len(migrations[4].Statements) != 1 || len(migrations[5].Statements) != 1 || len(migrations[6].Statements) != 1 || len(migrations[7].Statements) != 1 {
 				t.Fatalf("unexpected migration inventory: %#v", migrations)
 			}
 			for _, migration := range migrations {
@@ -42,6 +42,9 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			}
 			if !strings.Contains(migrations[6].Statements[0], "_scheduler_definition_states") || !strings.Contains(strings.ToLower(migrations[6].Statements[0]), "add column") || !strings.Contains(migrations[6].Statements[0], "source_kind") {
 				t.Fatalf("Scheduler definition state source migration is missing: %q", migrations[6].Statements[0])
+			}
+			if !strings.Contains(migrations[7].Statements[0], "_scheduler_capacity_guards") {
+				t.Fatalf("Scheduler capacity guard table is missing: %q", migrations[7].Statements[0])
 			}
 		})
 	}

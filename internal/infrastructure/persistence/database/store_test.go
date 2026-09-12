@@ -326,6 +326,54 @@ func TestDatabaseClaimRunsOnOnlyOneMachine(t *testing.T) {
 	}
 }
 
+func TestTriggerBacklogLimitIsDurableAcrossWorkersAndRuntimeScoped(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:scheduler-trigger-capacity?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err = EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
+		t.Fatal(err)
+	}
+	dialect, err := Renderer("sqlite", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := NewStore(db, dialect, "runtime-a", "worker-a")
+	second, _ := NewStore(db, dialect, "runtime-a", "worker-b")
+	otherRuntime, _ := NewStore(db, dialect, "runtime-b", "worker-c")
+	for _, store := range []*Store{first, second, otherRuntime} {
+		if err = store.ConfigureTriggerBacklogLimit(1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	definition := testDefinition("first", "run", `{}`)
+	definition.Status = "enabled"
+	dueAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	run, claimed, err := first.Claim(t.Context(), modulehost.DueTrigger{Definition: definition, ScheduledFor: dueAt}, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("first claim=%+v claimed=%t err=%v", run, claimed, err)
+	}
+	backlog, err := second.TriggerBacklog(t.Context())
+	if err != nil || backlog.Pending != 1 || backlog.Limit != 1 {
+		t.Fatalf("backlog=%+v err=%v", backlog, err)
+	}
+	definition.Key = "second"
+	if _, claimed, err = second.Claim(t.Context(), modulehost.DueTrigger{Definition: definition, ScheduledFor: dueAt}, time.Minute); !errors.Is(err, schedulersdk.ErrTriggerBacklogFull) || claimed {
+		t.Fatalf("full claim claimed=%t err=%v", claimed, err)
+	}
+	if _, claimed, err = otherRuntime.Claim(t.Context(), modulehost.DueTrigger{Definition: definition, ScheduledFor: dueAt}, time.Minute); err != nil || !claimed {
+		t.Fatalf("other runtime claimed=%t err=%v", claimed, err)
+	}
+	if err = first.Accept(t.Context(), run, schedulersdk.DownstreamReceipt{ID: "receipt", Owner: "agent", Status: "accepted"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err = second.Claim(t.Context(), modulehost.DueTrigger{Definition: definition, ScheduledFor: dueAt}, time.Minute); err != nil || !claimed {
+		t.Fatalf("released capacity claimed=%t err=%v", claimed, err)
+	}
+}
+
 func TestStandaloneSchemaMigrationIsIdempotent(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:scheduler-migration?mode=memory&cache=shared")
 	if err != nil {
@@ -342,7 +390,7 @@ func TestStandaloneSchemaMigrationIsIdempotent(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM "_schema_migrations" WHERE "dirty" = FALSE`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 7 {
+	if count != 8 {
 		t.Fatalf("applied migrations=%d", count)
 	}
 	var definitions int

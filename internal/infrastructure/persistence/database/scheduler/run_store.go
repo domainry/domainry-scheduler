@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/domainry/domainry-orm/query"
@@ -21,6 +22,8 @@ type Store struct {
 	db                  modulehost.Database
 	dialect             modulehost.Dialect
 	runtimeID, workerID string
+	capacityMu          sync.RWMutex
+	maxPendingTriggers  int
 }
 
 const (
@@ -43,7 +46,73 @@ func New(db modulehost.Database, dialect modulehost.Dialect, runtimeID, workerID
 	if runtimeID == "" || workerID == "" {
 		return nil, fmt.Errorf("Scheduler runtime and worker identity are required")
 	}
-	return &Store{db: db, dialect: dialect, runtimeID: runtimeID, workerID: workerID}, nil
+	defaults := schedulersdk.NormalizeWorkerConfig(schedulersdk.WorkerConfig{})
+	return &Store{db: db, dialect: dialect, runtimeID: runtimeID, workerID: workerID, maxPendingTriggers: defaults.MaxPendingTriggers}, nil
+}
+
+func (s *Store) ConfigureTriggerBacklogLimit(limit int) error {
+	if limit < 1 || limit > 1_000_000 {
+		return fmt.Errorf("Scheduler trigger backlog limit must be between 1 and 1000000")
+	}
+	s.capacityMu.Lock()
+	s.maxPendingTriggers = limit
+	s.capacityMu.Unlock()
+	return nil
+}
+
+func (s *Store) triggerBacklogLimit() int {
+	s.capacityMu.RLock()
+	defer s.capacityMu.RUnlock()
+	return s.maxPendingTriggers
+}
+
+func (s *Store) pendingTriggerCount(ctx context.Context, source modulehost.Queryer) (int, error) {
+	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_runs").
+		Projections(query.Project(query.CountAll())).
+		Where(query.And(query.Equal("runtime_id", s.runtimeID), query.In("status", "leased", "retrying"))).Build()
+	if err != nil {
+		return 0, err
+	}
+	var pending int
+	err = source.QueryRowContext(ctx, statement, args...).Scan(&pending)
+	return pending, err
+}
+
+func (s *Store) TriggerBacklog(ctx context.Context) (schedulersdk.TriggerBacklog, error) {
+	pending, err := s.pendingTriggerCount(ctx, s.db)
+	return schedulersdk.TriggerBacklog{Pending: pending, Limit: s.triggerBacklogLimit()}, err
+}
+
+func (s *Store) lockTriggerCapacity(ctx context.Context, tx *sql.Tx) error {
+	statement, args, err := query.NewInsertBuilder(s.dialect, "_scheduler_capacity_guards").
+		Columns("runtime_id", "revision").Values(s.runtimeID, int64(1)).
+		OnConflictDoNothing("runtime_id").Build()
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, statement, args...); err != nil {
+		return err
+	}
+	// An idempotent write is the portable database lock used elsewhere in this
+	// store. It serializes count + claim across every supported store profile.
+	statement, args, err = query.NewUpdateBuilder(s.dialect, "_scheduler_capacity_guards").
+		Set("revision", int64(1)).Where(query.Equal("runtime_id", s.runtimeID)).Build()
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, statement, args...)
+	return err
+}
+
+func (s *Store) checkTriggerCapacity(ctx context.Context, tx *sql.Tx) error {
+	pending, err := s.pendingTriggerCount(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if pending >= s.triggerBacklogLimit() {
+		return schedulersdk.ErrTriggerBacklogFull
+	}
+	return nil
 }
 
 func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next time.Time) error {
@@ -404,6 +473,28 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 		return schedulersdk.Run{}, false, err
 	}
 	defer tx.Rollback()
+	if err = s.lockTriggerCapacity(ctx, tx); err != nil {
+		return schedulersdk.Run{}, false, err
+	}
+	existingQuery, existingArgs, buildErr := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("status").Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("run_id", id))).Build()
+	if buildErr != nil {
+		return schedulersdk.Run{}, false, buildErr
+	}
+	var existingStatus string
+	if existingErr := tx.QueryRowContext(ctx, existingQuery, existingArgs...).Scan(&existingStatus); existingErr == nil {
+		_ = tx.Rollback()
+		run, claimed, takeErr := s.takeExpired(ctx, id, ttl, now)
+		if takeErr != nil || claimed {
+			return run, claimed, takeErr
+		}
+		run, getErr := s.get(ctx, id)
+		return run, false, getErr
+	} else if existingErr != sql.ErrNoRows {
+		return schedulersdk.Run{}, false, existingErr
+	}
+	if err = s.checkTriggerCapacity(ctx, tx); err != nil {
+		return schedulersdk.Run{}, false, err
+	}
 	if _, err = tx.ExecContext(ctx, insert, args...); err != nil {
 		if !isUnique(err) {
 			return schedulersdk.Run{}, false, err
@@ -579,6 +670,20 @@ func (s *Store) Retry(ctx context.Context, id, reason string) (schedulersdk.Run,
 		return schedulersdk.Run{}, err
 	}
 	defer tx.Rollback()
+	if err = s.lockTriggerCapacity(ctx, tx); err != nil {
+		return schedulersdk.Run{}, err
+	}
+	statusQuery, statusArgs, statusErr := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("status").Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("run_id", strings.TrimSpace(id)))).Build()
+	if statusErr != nil {
+		return schedulersdk.Run{}, statusErr
+	}
+	var currentStatus string
+	if statusErr = tx.QueryRowContext(ctx, statusQuery, statusArgs...).Scan(&currentStatus); statusErr != nil || currentStatus != "failed" && currentStatus != "dead_letter" {
+		return schedulersdk.Run{}, fmt.Errorf("Scheduler run %q is not retryable", id)
+	}
+	if err = s.checkTriggerCapacity(ctx, tx); err != nil {
+		return schedulersdk.Run{}, err
+	}
 	result, err := tx.ExecContext(ctx, update, args...)
 	if err != nil {
 		return schedulersdk.Run{}, err
@@ -602,6 +707,8 @@ func (s *Store) Retry(ctx context.Context, id, reason string) (schedulersdk.Run,
 	}
 	return s.get(ctx, id)
 }
+
+var _ modulehost.TriggerBacklogStore = (*Store)(nil)
 
 func (s *Store) Cancel(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	now := time.Now().UTC()
