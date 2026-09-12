@@ -39,10 +39,11 @@ type transportStub struct {
 	session  schedulersdk.DefinitionPublisherSession
 	closes   int
 	bound    schedulersdk.ApplicationRef
+	plan     schedulersdk.ScheduledPlan
 }
 
 func (*transportStub) Descriptor(context.Context, schedulersdk.ApplicationRef) (schedulersdk.Descriptor, error) {
-	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS, Capabilities: []string{schedulersdk.CapabilityDefinitionPublicationFencing}}, nil
+	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS, Capabilities: []string{schedulersdk.CapabilityDefinitionPublicationFencing, schedulersdk.CapabilityScheduledPlanRecords}}, nil
 }
 func (t *transportStub) BeginDefinitionPublisherSession(context.Context, schedulersdk.ApplicationRef) (schedulersdk.DefinitionPublisherSession, error) {
 	if t.session.Generation == 0 {
@@ -98,6 +99,34 @@ func (t *transportStub) Close(context.Context, schedulersdk.ApplicationRef) erro
 	t.closes++
 	return nil
 }
+func (t *transportStub) CreateScheduledPlan(_ context.Context, _ schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanCreate) (schedulersdk.ScheduledPlanReceipt, error) {
+	t.plan = schedulersdk.ScheduledPlan{ID: "plan-remote", Name: input.Name, Owner: input.Owner}
+	return schedulersdk.ScheduledPlanReceipt{Plan: t.plan}, nil
+}
+func (t *transportStub) GetScheduledPlan(_ context.Context, _ schedulersdk.ApplicationRef, lookup schedulersdk.ScheduledPlanLookup) (schedulersdk.ScheduledPlan, error) {
+	if lookup.PlanID != t.plan.ID {
+		return schedulersdk.ScheduledPlan{}, schedulersdk.ErrScheduledPlanNotFound
+	}
+	return t.plan, nil
+}
+func (t *transportStub) ListScheduledPlans(context.Context, schedulersdk.ApplicationRef, schedulersdk.ScheduledPlanList) (schedulersdk.ScheduledPlanPage, error) {
+	return schedulersdk.ScheduledPlanPage{Items: []schedulersdk.ScheduledPlan{t.plan}}, nil
+}
+func (t *transportStub) UpdateScheduledPlan(_ context.Context, _ schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanUpdate) (schedulersdk.ScheduledPlanReceipt, error) {
+	t.plan.Name, t.plan.Revision = input.Name, input.ExpectedRevision+1
+	return schedulersdk.ScheduledPlanReceipt{Plan: t.plan}, nil
+}
+func (t *transportStub) PauseScheduledPlan(_ context.Context, _ schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error) {
+	t.plan.Status, t.plan.Revision = schedulersdk.ScheduledPlanStatusPaused, input.ExpectedRevision+1
+	return schedulersdk.ScheduledPlanReceipt{Plan: t.plan}, nil
+}
+func (t *transportStub) ResumeScheduledPlan(_ context.Context, _ schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error) {
+	t.plan.Status, t.plan.Revision = schedulersdk.ScheduledPlanStatusEnabled, input.ExpectedRevision+1
+	return schedulersdk.ScheduledPlanReceipt{Plan: t.plan}, nil
+}
+func (t *transportStub) DeleteScheduledPlan(_ context.Context, _ schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanDeleteReceipt, error) {
+	return schedulersdk.ScheduledPlanDeleteReceipt{PlanID: input.PlanID, Revision: input.ExpectedRevision + 1, Deleted: true}, nil
+}
 
 func TestSaaSBindingPublishesRuntimeDefinitionSnapshot(t *testing.T) {
 	definition := schedulersdk.Definition{Key: "daily", Status: "enabled", Revision: "v1", Schedule: schedulersdk.Schedule{Type: "interval", IntervalSeconds: 60}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "workflow", Operation: "scheduled:daily"}}
@@ -118,6 +147,16 @@ func TestSaaSBindingPublishesRuntimeDefinitionSnapshot(t *testing.T) {
 	}
 	if transport.bound.RuntimeID != "runtime-a" || transport.snapshot.Revision != 11 || len(transport.snapshot.Definitions) != 1 || transport.snapshot.PublisherSession == nil || transport.snapshot.PublisherSession.Generation != transport.session.Generation {
 		t.Fatalf("snapshot=%#v", transport.snapshot)
+	}
+	plans := binding.(schedulersdk.ScheduledPlanService)
+	owner := schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-a", ProductKey: "agent"}
+	receipt, err := plans.CreateScheduledPlan(t.Context(), schedulersdk.ScheduledPlanCreate{Name: "remote", Owner: owner})
+	if err != nil || receipt.Plan.ID != "plan-remote" {
+		t.Fatalf("plan receipt=%+v err=%v", receipt, err)
+	}
+	loaded, err := plans.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: "plan-remote"})
+	if err != nil || loaded.ID != "plan-remote" {
+		t.Fatalf("loaded=%+v err=%v", loaded, err)
 	}
 	if err := binding.Close(t.Context()); err != nil || transport.closes != 0 {
 		t.Fatalf("close err=%v transport calls=%d", err, transport.closes)

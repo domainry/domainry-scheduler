@@ -23,6 +23,11 @@ type Store struct {
 	runtimeID, workerID string
 }
 
+const (
+	definitionStateSourceRuntime = "runtime_definition"
+	definitionStateSourcePlan    = "scheduled_plan"
+)
+
 type sqlExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
@@ -42,19 +47,23 @@ func New(db modulehost.Database, dialect modulehost.Dialect, runtimeID, workerID
 }
 
 func (s *Store) Reconcile(ctx context.Context, d schedulersdk.Definition, next time.Time) error {
-	return s.reconcileWith(ctx, s.db, d, next)
+	return s.reconcileWith(ctx, s.db, d, next, definitionStateSourceRuntime, true)
 }
 
-func (s *Store) reconcileWith(ctx context.Context, executor sqlExecutor, d schedulersdk.Definition, next time.Time) error {
+func (s *Store) ReconcileScheduledPlan(ctx context.Context, d schedulersdk.Definition, next time.Time, enabled bool) error {
+	return s.reconcileWith(ctx, s.db, d, next, definitionStateSourcePlan, enabled)
+}
+
+func (s *Store) reconcileWith(ctx context.Context, executor sqlExecutor, d schedulersdk.Definition, next time.Time, sourceKind string, enabled bool) error {
 	raw, err := json.Marshal(d)
 	if err != nil {
 		return err
 	}
 	now := formatTime(time.Now())
-	predicate := s.definitionIdentity(d.Key)
+	predicate := s.definitionSourceIdentity(d.Key, sourceKind)
 
 	changed, changedArgs, err := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").
-		Set("revision", d.Revision).Set("enabled", true).Set("definition_json", string(raw)).Set("next_run_at", formatTime(next)).Set("updated_at", now).
+		Set("revision", d.Revision).Set("enabled", enabled).Set("definition_json", string(raw)).Set("next_run_at", formatTime(next)).Set("updated_at", now).
 		Where(query.And(predicate, query.NotEqual("revision", d.Revision))).Build()
 	if err != nil {
 		return err
@@ -67,8 +76,15 @@ func (s *Store) reconcileWith(ctx context.Context, executor sqlExecutor, d sched
 	if affected > 0 {
 		return nil
 	}
-	stable, stableArgs, err := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").
-		Set("enabled", true).Set("definition_json", string(raw)).Set("updated_at", now).Where(predicate).Build()
+	stableBuilder := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("definition_json", string(raw)).Set("updated_at", now).Where(predicate)
+	// A completed one-time plan disables its execution state. Rehydrating the
+	// same immutable plan revision must preserve that terminal cursor instead
+	// of turning every restart into another due scan. Explicit plan management
+	// changes revision before changing enabled state.
+	if sourceKind != definitionStateSourcePlan || !enabled {
+		stableBuilder.Set("enabled", enabled)
+	}
+	stable, stableArgs, err := stableBuilder.Build()
 	if err != nil {
 		return err
 	}
@@ -80,7 +96,7 @@ func (s *Store) reconcileWith(ctx context.Context, executor sqlExecutor, d sched
 	if affected > 0 {
 		return nil
 	}
-	insert, insertArgs, err := query.NewInsertBuilder(s.dialect, "_scheduler_definition_states").Columns("runtime_id", "definition_key", "revision", "enabled", "definition_json", "next_run_at", "snapshot_revision", "updated_at").Values(s.runtimeID, d.Key, d.Revision, true, string(raw), formatTime(next), int64(0), now).Build()
+	insert, insertArgs, err := query.NewInsertBuilder(s.dialect, "_scheduler_definition_states").Columns("runtime_id", "definition_key", "revision", "enabled", "definition_json", "next_run_at", "snapshot_revision", "updated_at", "source_kind").Values(s.runtimeID, d.Key, d.Revision, enabled, string(raw), formatTime(next), int64(0), now, sourceKind).Build()
 	if err != nil {
 		return err
 	}
@@ -91,7 +107,14 @@ func (s *Store) reconcileWith(ctx context.Context, executor sqlExecutor, d sched
 	if !isUnique(err) {
 		return err
 	}
-
+	result, err = executor.ExecContext(ctx, stable, stableArgs...)
+	if err != nil {
+		return err
+	}
+	affected, _ = result.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("Scheduler definition key %q conflicts with another state source", d.Key)
+	}
 	return nil
 }
 
@@ -100,7 +123,7 @@ func (s *Store) DisableMissing(ctx context.Context, active []string, revision in
 }
 
 func (s *Store) disableMissingWith(ctx context.Context, executor sqlExecutor, active []string, revision int64) error {
-	update, args, err := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("enabled", false).Set("snapshot_revision", revision).Where(query.Equal("runtime_id", s.runtimeID)).Build()
+	update, args, err := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("enabled", false).Set("snapshot_revision", revision).Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("source_kind", definitionStateSourceRuntime))).Build()
 	if err != nil {
 		return err
 	}
@@ -114,7 +137,7 @@ func (s *Store) disableMissingWith(ctx context.Context, executor sqlExecutor, ac
 	for i, key := range active {
 		values[i] = key
 	}
-	update, args, err = query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("enabled", true).Set("snapshot_revision", revision).Where(query.And(query.Equal("runtime_id", s.runtimeID), query.In("definition_key", values...))).Build()
+	update, args, err = query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("enabled", true).Set("snapshot_revision", revision).Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("source_kind", definitionStateSourceRuntime), query.In("definition_key", values...))).Build()
 	if err != nil {
 		return err
 	}
@@ -170,7 +193,7 @@ func (s *Store) ApplyDefinitionSnapshot(ctx context.Context, snapshot schedulerp
 		if !definition.InitialNextRunAt.IsZero() && definition.InitialNextRunAt.Before(next) {
 			next = definition.InitialNextRunAt.UTC()
 		}
-		if err := s.reconcileWith(ctx, tx, definition, next); err != nil {
+		if err := s.reconcileWith(ctx, tx, definition, next, definitionStateSourceRuntime, true); err != nil {
 			return false, err
 		}
 	}
@@ -258,15 +281,44 @@ func (s *Store) Due(ctx context.Context, now time.Time, limit int) ([]modulehost
 	if err != nil {
 		return nil, err
 	}
-	result, err := scanDueRows(rows)
+	states, err := scanDueRows(rows)
 	if err != nil {
 		return nil, err
+	}
+	result := make([]modulehost.DueTrigger, 0, limit)
+	for _, state := range states {
+		remaining := limit - len(result)
+		if remaining <= 0 {
+			break
+		}
+		resolution := schedule.ResolveMisfire(state.Definition.Schedule, state.Definition.Policy, state.Cursor, now, remaining)
+		if len(resolution.Windows) == 0 {
+			if !resolution.CursorAfter.IsZero() || resolution.Disable {
+				if _, err := s.fastForwardMisfire(ctx, state.Definition, state.Cursor, resolution.CursorAfter, resolution.Disable, now); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+		for index, window := range resolution.Windows {
+			item := modulehost.DueTrigger{Definition: state.Definition, ScheduledFor: window, ExpectedCursor: window}
+			if index == len(resolution.Windows)-1 {
+				item.NextRunAt = resolution.CursorAfter
+			}
+			result = append(result, item)
+		}
 	}
 	remaining := limit - len(result)
 	if remaining <= 0 {
 		return result, nil
 	}
-	retryQuery, retryArgs, err := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("definition_key", "scheduled_for").Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("status", "retrying"), query.LessThanOrEqual("next_retry_at", at))).OrderBy(query.Ascending("next_retry_at")).Limit(remaining).Build()
+	retryQuery, retryArgs, err := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("definition_key", "scheduled_for").Where(query.And(
+		query.Equal("runtime_id", s.runtimeID),
+		query.Or(
+			query.And(query.Equal("status", "retrying"), query.LessThanOrEqual("next_retry_at", at)),
+			query.And(query.Equal("status", "leased"), query.LessThanOrEqual("lease_expires_at", at)),
+		),
+	)).OrderBy(query.Ascending("scheduled_for")).Limit(remaining).Build()
 	if err != nil {
 		return nil, err
 	}
@@ -291,9 +343,14 @@ func (s *Store) Due(ctx context.Context, now time.Time, limit int) ([]modulehost
 	return result, retries.Err()
 }
 
-func scanDueRows(rows *sql.Rows) ([]modulehost.DueTrigger, error) {
+type dueDefinitionState struct {
+	Definition schedulersdk.Definition
+	Cursor     time.Time
+}
+
+func scanDueRows(rows *sql.Rows) ([]dueDefinitionState, error) {
 	defer rows.Close()
-	var result []modulehost.DueTrigger
+	var result []dueDefinitionState
 	for rows.Next() {
 		var raw, due string
 		if err := rows.Scan(&raw, &due); err != nil {
@@ -303,9 +360,31 @@ func scanDueRows(rows *sql.Rows) ([]modulehost.DueTrigger, error) {
 		if err := json.Unmarshal([]byte(raw), &definition); err != nil {
 			return nil, err
 		}
-		result = append(result, modulehost.DueTrigger{Definition: definition, ScheduledFor: parseTime(due)})
+		result = append(result, dueDefinitionState{Definition: definition, Cursor: parseTime(due)})
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) fastForwardMisfire(ctx context.Context, definition schedulersdk.Definition, expected, next time.Time, disable bool, now time.Time) (bool, error) {
+	if next.IsZero() {
+		next = expected
+	}
+	builder := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").
+		Set("next_run_at", formatTime(next)).Set("last_run_at", formatTime(expected)).Set("last_run_status", "misfire_skipped").Set("updated_at", formatTime(now)).
+		Where(query.And(s.definitionIdentity(definition.Key), query.Equal("enabled", true), query.Equal("next_run_at", formatTime(expected))))
+	if disable {
+		builder.Set("enabled", false)
+	}
+	statement, args, err := builder.Build()
+	if err != nil {
+		return false, err
+	}
+	result, err := s.db.ExecContext(ctx, statement, args...)
+	if err != nil {
+		return false, err
+	}
+	affected, _ := result.RowsAffected()
+	return affected == 1, nil
 }
 
 func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.Duration) (schedulersdk.Run, bool, error) {
@@ -337,8 +416,14 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 		run, getErr := s.get(ctx, id)
 		return run, false, getErr
 	}
-	if err = s.advanceCursorWith(ctx, tx, due.Definition, due.ScheduledFor, now, "leased"); err != nil {
-		return schedulersdk.Run{}, false, err
+	if !due.ExpectedCursor.IsZero() {
+		advanced, err := s.advanceCursorWith(ctx, tx, due.Definition, due.ExpectedCursor, due.NextRunAt, now, "leased")
+		if err != nil {
+			return schedulersdk.Run{}, false, err
+		}
+		if !advanced {
+			return schedulersdk.Run{}, false, nil
+		}
 	}
 	if err = s.eventWith(ctx, tx, id, "lease_acquired", ""); err != nil {
 		return schedulersdk.Run{}, false, err
@@ -697,17 +782,31 @@ func (s *Store) definition(ctx context.Context, key string) (schedulersdk.Defini
 	err = json.Unmarshal([]byte(raw), &value)
 	return value, err == nil, err
 }
-func (s *Store) advanceCursor(ctx context.Context, d schedulersdk.Definition, scheduled, now time.Time, status string) error {
-	return s.advanceCursorWith(ctx, s.db, d, scheduled, now, status)
+func (s *Store) advanceCursor(ctx context.Context, d schedulersdk.Definition, scheduled, next, now time.Time, status string) (bool, error) {
+	return s.advanceCursorWith(ctx, s.db, d, scheduled, next, now, status)
 }
-func (s *Store) advanceCursorWith(ctx context.Context, executor sqlExecutor, d schedulersdk.Definition, scheduled, now time.Time, status string) error {
-	next := schedule.NextSchedule(d.Schedule, scheduled)
-	update, args, err := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("next_run_at", formatTime(next)).Set("last_run_at", formatTime(scheduled)).Set("last_run_status", status).Set("updated_at", formatTime(now)).Where(s.definitionIdentity(d.Key)).Build()
-	if err != nil {
-		return err
+func (s *Store) advanceCursorWith(ctx context.Context, executor sqlExecutor, d schedulersdk.Definition, scheduled, next, now time.Time, status string) (bool, error) {
+	disable := schedule.Type(schedule.Data(d.Schedule)) == "once"
+	if next.IsZero() && !disable {
+		next = schedule.NextSchedule(d.Schedule, scheduled)
 	}
-	_, err = executor.ExecContext(ctx, update, args...)
-	return err
+	if next.IsZero() {
+		next = scheduled
+	}
+	builder := query.NewUpdateBuilder(s.dialect, "_scheduler_definition_states").Set("next_run_at", formatTime(next)).Set("last_run_at", formatTime(scheduled)).Set("last_run_status", status).Set("updated_at", formatTime(now)).Where(query.And(s.definitionIdentity(d.Key), query.Equal("enabled", true), query.Equal("next_run_at", formatTime(scheduled))))
+	if disable {
+		builder.Set("enabled", false)
+	}
+	update, args, err := builder.Build()
+	if err != nil {
+		return false, err
+	}
+	result, err := executor.ExecContext(ctx, update, args...)
+	if err != nil {
+		return false, err
+	}
+	affected, _ := result.RowsAffected()
+	return affected == 1, nil
 }
 func (s *Store) event(ctx context.Context, runID, kind, message string) error {
 	return s.eventWith(ctx, s.db, runID, kind, message)
@@ -723,6 +822,9 @@ func (s *Store) eventWith(ctx context.Context, executor sqlExecutor, runID, kind
 }
 func (s *Store) definitionIdentity(key string) query.Predicate {
 	return query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("definition_key", strings.TrimSpace(key)))
+}
+func (s *Store) definitionSourceIdentity(key, sourceKind string) query.Predicate {
+	return query.And(s.definitionIdentity(key), query.Equal("source_kind", sourceKind))
 }
 func (s *Store) liveLease(run schedulersdk.Run) query.Predicate {
 	return query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("run_id", run.Trigger.RunID), query.Equal("lease_owner", run.Lease.Owner), query.Equal("fencing_token", run.Lease.Token), query.Equal("status", "leased"))

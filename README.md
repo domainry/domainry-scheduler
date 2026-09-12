@@ -2,6 +2,27 @@
 
 `domainry-scheduler` owns recurrence planning, durable trigger orchestration and downstream dispatch evidence. It does not own Workflow, Report, Connector or other business execution semantics.
 
+It also owns product-authored scheduled plan records. A plan stores the
+product-resolved workspace/user owner, IANA timezone, an exact one-time or
+recurring trigger, bounded JSON input, an allowed Action set, a downstream
+target, an optional conversation/Run reference, status, and revision. Products
+consume the optional `schedulersdk.ScheduledPlanService` extension and resolve
+identity before submitting the command; they never import Scheduler
+persistence. Plan execution projects into Scheduler's existing definition
+state, run, lease, retry and dead-letter pipeline; it does not create a second
+worker or run table. Management UI and notifications are separate capabilities
+built on this record boundary.
+
+Plan trigger policy is durable. One-time plans default to `catch_up_one` so a
+restart does not lose the single occurrence; recurring plans default to
+`skip` to avoid an unbounded burst. Callers may choose `catch_up_one` or
+`catch_up_bounded` with at most 100 windows and an explicit grace period.
+Every claimed window has a deterministic run/idempotency key. Claim moves the
+cursor with compare-and-swap, disables a claimed one-time cursor, and leaves a
+lease that another worker can fence and recover after expiry. Retriable state
+uses the same bounded attempts and dead-letter evidence as published Scheduler
+definitions.
+
 ## Deployment topologies
 
 - Module: inject `module.NewFactory(module.OptionsFromEnvironment())` through `runtimehost.Options.SchedulerFactory`. Runtime lends its ORM database/dialect ports, shared migration ledger, published definitions and downstream dispatch ports; Scheduler owns the durable schema and repositories.

@@ -1,6 +1,7 @@
 package saas
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -15,6 +16,8 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	schedulerhttptransport "github.com/domainry/domainry-scheduler-sdk/saashost/httptransport"
+	schedulercapability "github.com/domainry/domainry-scheduler/internal/capability"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
 	schedulermigration "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database/migration"
 	saashttp "github.com/domainry/domainry-scheduler/internal/transport/http/saas"
@@ -23,10 +26,31 @@ import (
 
 type databaseDownstream struct{}
 
+type databaseHTTPRoundTripper struct{ handler http.Handler }
+
+func (transport databaseHTTPRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	transport.handler.ServeHTTP(response, request)
+	return response.Result(), nil
+}
+
 type recordingDatabaseDownstream struct {
 	mu       sync.Mutex
 	triggers []schedulersdk.Trigger
 	dispatch chan schedulersdk.Trigger
+}
+
+type failingPlanDownstream struct {
+	calls chan schedulersdk.Trigger
+}
+
+func (d *failingPlanDownstream) Dispatch(_ context.Context, trigger schedulersdk.Trigger) (schedulersdk.DownstreamReceipt, error) {
+	d.calls <- trigger
+	return schedulersdk.DownstreamReceipt{}, errors.New("temporary downstream failure")
+}
+
+func (*failingPlanDownstream) ResolveHTTPConnection(context.Context, string) (modulehost.HTTPConnection, error) {
+	return modulehost.HTTPConnection{}, nil
 }
 
 func (databaseDownstream) Dispatch(_ context.Context, trigger schedulersdk.Trigger) (schedulersdk.DownstreamReceipt, error) {
@@ -89,6 +113,357 @@ func TestDatabaseServiceLifetimeDoesNotFollowOpeningRequest(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Scheduler worker did not stop during service shutdown")
+	}
+}
+
+func TestDatabaseServicePersistsScheduledPlansAcrossOwnerRestart(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:scheduler-saas-plans?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ref := schedulersdk.ApplicationRef{RuntimeID: "runtime-plans"}
+	open := func(workerID string) *DatabaseService {
+		service, openErr := NewDatabaseService(DatabaseServiceOptions{
+			Context: t.Context(), Database: db, Driver: "sqlite", WorkerID: workerID, Worker: schedulersdk.WorkerConfig{Enabled: false}, Applications: []schedulersdk.ApplicationRef{ref},
+			Downstreams: func(context.Context, schedulersdk.ApplicationRef) (DownstreamHost, error) {
+				return databaseDownstream{}, nil
+			},
+		})
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		return service
+	}
+	owner := schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-a", ProductKey: "agent"}
+	first := open("scheduler-plan-a")
+	receipt, err := first.CreateScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanCreate{
+		ClientID: "weekly", Name: "每周整理待办", Owner: owner, Timezone: "Asia/Shanghai",
+		Trigger: schedulersdk.ScheduledPlanTrigger{Type: "recurring", Schedule: &schedulersdk.Schedule{Type: "weekly_at", TimeOfDay: "09:00", DayOfWeek: "monday", Timezone: "Asia/Shanghai"}},
+		Input:   json.RawMessage(`{"goal":"整理未完成待办"}`), AllowedActions: []string{"todo.list", "artifact.create"},
+		Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"}, ConversationRef: schedulersdk.ScheduledPlanConversationRef{ConversationID: "conversation-a"},
+	})
+	if err != nil || receipt.Replay || receipt.Plan.ID == "" {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	if err := first.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	second := open("scheduler-plan-b")
+	defer second.Shutdown(t.Context())
+	loaded, err := second.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: receipt.Plan.ID})
+	if err != nil || loaded.ID != receipt.Plan.ID || loaded.Trigger.Schedule == nil || loaded.Trigger.Schedule.DayOfWeek != "monday" || loaded.ConversationRef.ConversationID != "conversation-a" {
+		t.Fatalf("loaded=%+v err=%v", loaded, err)
+	}
+	other := owner
+	other.WorkspaceID = "workspace-b"
+	if _, err := second.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: other, PlanID: receipt.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+		t.Fatalf("cross-workspace read err=%v", err)
+	}
+	otherRuntime := schedulersdk.ApplicationRef{RuntimeID: "runtime-other"}
+	if _, err := second.GetScheduledPlan(t.Context(), otherRuntime, schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: receipt.Plan.ID}); err == nil {
+		t.Fatal("configured SaaS plan service accepted another Runtime")
+	}
+}
+
+func TestScheduledPlanWorkerRetriesOnceAfterSaaSRestartWithoutDuplicateWindow(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:scheduler-plan-retry-restart?mode=memory&cache=shared&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ref := schedulersdk.ApplicationRef{RuntimeID: "runtime-plan-retry"}
+	failedCalls := make(chan schedulersdk.Trigger, 2)
+	firstDownstream := &failingPlanDownstream{calls: failedCalls}
+	first, err := NewDatabaseService(DatabaseServiceOptions{
+		Context: t.Context(), Database: db, Driver: "sqlite", WorkerID: "worker-before-restart",
+		Worker:       schedulersdk.WorkerConfig{Enabled: true, PollInterval: 5 * time.Millisecond, BatchSize: 5, LeaseTTL: time.Second},
+		Applications: []schedulersdk.ApplicationRef{ref},
+		Downstreams: func(context.Context, schedulersdk.ApplicationRef) (DownstreamHost, error) {
+			return firstDownstream, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstServer, err := saashttp.New(saashttp.Options{ApplicationTokens: map[string]string{ref.RuntimeID: "scheduler-token"}, Service: first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityBinding, err := schedulercapability.NewBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilitySummary, err := capabilityBinding.CapabilitySummary(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{
+		Endpoint: "http://scheduler.test", Token: "scheduler-token",
+		Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: firstServer}}, CapabilityContractSHA256: capabilitySummary.Identity.ContractSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dueAt := time.Now().UTC().Add(30 * time.Millisecond)
+	owner := schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-a", ProductKey: "agent"}
+	receipt, err := clientTransport.CreateScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanCreate{
+		ClientID: "restart-once", Name: "服务重启后继续", Owner: owner, Timezone: "Asia/Shanghai",
+		Trigger: schedulersdk.ScheduledPlanTrigger{Type: schedulersdk.ScheduledPlanTriggerOnce, At: &dueAt, Policy: schedulersdk.Policy{
+			Misfire: schedulersdk.ScheduledPlanMisfireCatchOne, MisfireGrace: time.Minute, MaxAttempts: 3,
+			RetryInitial: 200 * time.Millisecond, RetryMax: time.Second, Timeout: time.Second,
+		}},
+		Input: json.RawMessage(`{"goal":"整理未完成待办"}`), AllowedActions: []string{"todo.list", "artifact.create"},
+		Target:          schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"},
+		ConversationRef: schedulersdk.ScheduledPlanConversationRef{ConversationID: "conversation-a", RunID: "run-a"},
+	})
+	if err != nil || receipt.Plan.ID == "" {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	var firstTrigger schedulersdk.Trigger
+	select {
+	case firstTrigger = <-failedCalls:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first plan attempt did not dispatch")
+	}
+	waitSchedulerRunStatus(t, db, ref.RuntimeID, firstTrigger.RunID, "retrying")
+	if err := first.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	succeededCalls := make(chan schedulersdk.Trigger, 2)
+	secondDownstream := &recordingDatabaseDownstream{dispatch: succeededCalls}
+	second, err := NewDatabaseService(DatabaseServiceOptions{
+		Context: t.Context(), Database: db, Driver: "sqlite", WorkerID: "worker-after-restart",
+		Worker:       schedulersdk.WorkerConfig{Enabled: true, PollInterval: 5 * time.Millisecond, BatchSize: 5, LeaseTTL: time.Second},
+		Applications: []schedulersdk.ApplicationRef{ref},
+		Downstreams: func(context.Context, schedulersdk.ApplicationRef) (DownstreamHost, error) {
+			return secondDownstream, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Shutdown(t.Context())
+	var recovered schedulersdk.Trigger
+	select {
+	case recovered = <-succeededCalls:
+	case <-time.After(2 * time.Second):
+		t.Fatal("persisted plan retry did not resume after Scheduler restart")
+	}
+	if recovered.RunID != firstTrigger.RunID || recovered.IdempotencyKey != firstTrigger.IdempotencyKey || recovered.Attempt != 2 {
+		t.Fatalf("first=%+v recovered=%+v", firstTrigger, recovered)
+	}
+	var payload schedulersdk.ScheduledPlanDispatch
+	if err := json.Unmarshal(recovered.Target.Payload, &payload); err != nil || payload.ContractVersion != schedulersdk.ScheduledPlanDispatchContractVersion || payload.PlanID != receipt.Plan.ID || payload.Owner != owner || payload.ConversationRef.RunID != "run-a" || len(payload.AllowedActions) != 2 || string(payload.Input) != `{"goal":"整理未完成待办"}` {
+		t.Fatalf("payload=%+v raw=%s err=%v", payload, recovered.Target.Payload, err)
+	}
+	waitSchedulerRunStatus(t, db, ref.RuntimeID, recovered.RunID, "succeeded")
+	var runs, retries int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_runs WHERE runtime_id = ? AND definition_key = ?`, ref.RuntimeID, "scheduled-plan:"+receipt.Plan.ID).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_run_events WHERE runtime_id = ? AND run_id = ? AND event_type = 'retry_scheduled'`, ref.RuntimeID, recovered.RunID).Scan(&retries); err != nil {
+		t.Fatal(err)
+	}
+	var attempt int
+	var fencing int64
+	if err := db.QueryRowContext(t.Context(), `SELECT attempt, fencing_token FROM _scheduler_runs WHERE runtime_id = ? AND run_id = ?`, ref.RuntimeID, recovered.RunID).Scan(&attempt, &fencing); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 || retries != 1 || attempt != 2 || fencing != 2 {
+		t.Fatalf("runs=%d retries=%d attempt=%d fencing=%d", runs, retries, attempt, fencing)
+	}
+	select {
+	case duplicate := <-succeededCalls:
+		t.Fatalf("one-time window dispatched twice after success: %+v", duplicate)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func waitSchedulerRunStatus(t *testing.T, db *sql.DB, runtimeID, runID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var status string
+		if err := db.QueryRowContext(t.Context(), `SELECT status FROM _scheduler_runs WHERE runtime_id = ? AND run_id = ?`, runtimeID, runID).Scan(&status); err == nil && status == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("run %s did not reach %s", runID, want)
+}
+
+func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:scheduler-saas-plan-http?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ref := schedulersdk.ApplicationRef{RuntimeID: "runtime-plan-http"}
+	openService := func(workerID string) *DatabaseService {
+		service, openErr := NewDatabaseService(DatabaseServiceOptions{
+			Context: t.Context(), Database: db, Driver: "sqlite", WorkerID: workerID, Worker: schedulersdk.WorkerConfig{Enabled: false}, Applications: []schedulersdk.ApplicationRef{ref},
+			Downstreams: func(context.Context, schedulersdk.ApplicationRef) (DownstreamHost, error) {
+				return databaseDownstream{}, nil
+			},
+		})
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		return service
+	}
+	request := schedulersdk.ScheduledPlanCreate{
+		ClientID: "weekly-http", Name: "每周一整理待办", Owner: schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-a", ProductKey: "agent"}, Timezone: "Asia/Shanghai",
+		Trigger: schedulersdk.ScheduledPlanTrigger{Type: "recurring", Schedule: &schedulersdk.Schedule{Type: "weekly_at", TimeOfDay: "09:00", DayOfWeek: "monday", Timezone: "Asia/Shanghai"}},
+		Input:   json.RawMessage(`{"goal":"整理本周待办","include_status":"open"}`), AllowedActions: []string{"todo.list", "artifact.create"},
+		Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"}, ConversationRef: schedulersdk.ScheduledPlanConversationRef{ConversationID: "conversation-a", RunID: "run-a"},
+	}
+	call := func(handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
+		raw := []byte{}
+		if body != nil {
+			var marshalErr error
+			raw, marshalErr = json.Marshal(body)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+		}
+		httpRequest := httptest.NewRequest(method, path, bytes.NewReader(raw))
+		httpRequest.Header.Set("Authorization", "Bearer scheduler-token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httpRequest)
+		return response
+	}
+	first := openService("scheduler-plan-http-a")
+	server, err := saashttp.New(saashttp.Options{ApplicationTokens: map[string]string{ref.RuntimeID: "scheduler-token"}, Service: first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityBinding, err := schedulercapability.NewBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilitySummary, err := capabilityBinding.CapabilitySummary(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{Endpoint: "http://scheduler.test", Token: "scheduler-token", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: server}}, CapabilityContractSHA256: capabilitySummary.Identity.ContractSHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sdkRequest := request
+	sdkRequest.ClientID = "weekly-sdk"
+	sdkReceipt, err := clientTransport.CreateScheduledPlan(t.Context(), ref, sdkRequest)
+	if err != nil || sdkReceipt.Replay || sdkReceipt.Plan.ID == "" {
+		t.Fatalf("SDK create receipt=%+v err=%v", sdkReceipt, err)
+	}
+	response := call(server, http.MethodPost, "/v1/applications/"+ref.RuntimeID+"/plans", request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var receipt schedulersdk.ScheduledPlanReceipt
+	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil || receipt.Replay || receipt.Plan.ID == "" {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	replay := call(server, http.MethodPost, "/v1/applications/"+ref.RuntimeID+"/plans", request)
+	var replayReceipt schedulersdk.ScheduledPlanReceipt
+	if err := json.Unmarshal(replay.Body.Bytes(), &replayReceipt); err != nil || replay.Code != http.StatusOK || !replayReceipt.Replay || replayReceipt.Plan.ID != receipt.Plan.ID {
+		t.Fatalf("replay status=%d receipt=%+v err=%v", replay.Code, replayReceipt, err)
+	}
+	changed := request
+	changed.Name = "same key, changed content"
+	conflict := call(server, http.MethodPost, "/v1/applications/"+ref.RuntimeID+"/plans", changed)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	if err := first.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	second := openService("scheduler-plan-http-b")
+	restarted, err := saashttp.New(saashttp.Options{ApplicationTokens: map[string]string{ref.RuntimeID: "scheduler-token"}, Service: second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{Endpoint: "http://scheduler.test", Token: "scheduler-token", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: restarted}}, CapabilityContractSHA256: capabilitySummary.Identity.ContractSHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sdkLoaded, err := restartedTransport.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID})
+	if err != nil || sdkLoaded.ID != sdkReceipt.Plan.ID || sdkLoaded.ConversationRef.RunID != "run-a" {
+		t.Fatalf("SDK loaded=%+v err=%v", sdkLoaded, err)
+	}
+	ownerQuery := "?workspace_id=workspace-a&user_id=user-a&product_key=agent"
+	loadedResponse := call(restarted, http.MethodGet, "/v1/applications/"+ref.RuntimeID+"/plans/"+receipt.Plan.ID+ownerQuery, nil)
+	var loaded schedulersdk.ScheduledPlan
+	if err := json.Unmarshal(loadedResponse.Body.Bytes(), &loaded); err != nil || loadedResponse.Code != http.StatusOK || loaded.ID != receipt.Plan.ID || loaded.Trigger.Schedule == nil || loaded.Trigger.Schedule.DayOfWeek != "monday" || loaded.ConversationRef.RunID != "run-a" {
+		t.Fatalf("loaded status=%d plan=%+v err=%v", loadedResponse.Code, loaded, err)
+	}
+	forbidden := call(restarted, http.MethodGet, "/v1/applications/"+ref.RuntimeID+"/plans/"+receipt.Plan.ID+"?workspace_id=workspace-a&user_id=user-b&product_key=agent", nil)
+	if forbidden.Code != http.StatusNotFound {
+		t.Fatalf("cross-user status=%d body=%s", forbidden.Code, forbidden.Body.String())
+	}
+	page, err := restartedTransport.ListScheduledPlans(t.Context(), ref, schedulersdk.ScheduledPlanList{Owner: request.Owner, Limit: 10})
+	if err != nil || len(page.Items) != 2 {
+		t.Fatalf("management list=%+v err=%v", page, err)
+	}
+	updated, err := restartedTransport.UpdateScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanUpdate{
+		Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 1, Name: "每周二整理待办", Timezone: "Asia/Shanghai",
+		Trigger: schedulersdk.ScheduledPlanTrigger{Type: "recurring", Schedule: &schedulersdk.Schedule{Type: "weekly_at", TimeOfDay: "10:30", DayOfWeek: "tuesday", Timezone: "Asia/Shanghai"}},
+		Input:   sdkReceipt.Plan.Input, AllowedActions: sdkReceipt.Plan.AllowedActions, Target: sdkReceipt.Plan.Target, ConversationRef: sdkReceipt.Plan.ConversationRef,
+	})
+	if err != nil || updated.Plan.Revision != 2 || updated.Plan.Trigger.Schedule == nil || updated.Plan.Trigger.Schedule.DayOfWeek != "tuesday" {
+		t.Fatalf("management update=%+v err=%v", updated, err)
+	}
+	if _, err := restartedTransport.UpdateScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanUpdate{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 1, Name: "stale", Timezone: updated.Plan.Timezone, Trigger: updated.Plan.Trigger, Input: updated.Plan.Input, AllowedActions: updated.Plan.AllowedActions, Target: updated.Plan.Target, ConversationRef: updated.Plan.ConversationRef}); !errors.Is(err, schedulersdk.ErrScheduledPlanConflict) {
+		t.Fatalf("stale SDK update err=%v", err)
+	}
+	paused, err := restartedTransport.PauseScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 2})
+	if err != nil || paused.Plan.Status != schedulersdk.ScheduledPlanStatusPaused || paused.Plan.Revision != 3 {
+		t.Fatalf("management pause=%+v err=%v", paused, err)
+	}
+	pauseReplay, err := restartedTransport.PauseScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 2})
+	if err != nil || !pauseReplay.Replay || pauseReplay.Plan.Revision != 3 {
+		t.Fatalf("management pause replay=%+v err=%v", pauseReplay, err)
+	}
+	resumed, err := restartedTransport.ResumeScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 3})
+	if err != nil || resumed.Plan.Status != schedulersdk.ScheduledPlanStatusEnabled || resumed.Plan.Revision != 4 {
+		t.Fatalf("management resume=%+v err=%v", resumed, err)
+	}
+	deleted, err := restartedTransport.DeleteScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 4})
+	if err != nil || !deleted.Deleted || deleted.Revision != 5 {
+		t.Fatalf("management delete=%+v err=%v", deleted, err)
+	}
+	deleteReplay, err := restartedTransport.DeleteScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 4})
+	if err != nil || !deleteReplay.Replay || deleteReplay.Revision != 5 {
+		t.Fatalf("management delete replay=%+v err=%v", deleteReplay, err)
+	}
+	if _, err := restartedTransport.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+		t.Fatalf("deleted SDK get err=%v", err)
+	}
+	otherOwner := request.Owner
+	otherOwner.UserID = "user-b"
+	if _, err := restartedTransport.PauseScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: otherOwner, PlanID: receipt.Plan.ID, ExpectedRevision: 1}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+		t.Fatalf("cross-user SDK pause err=%v", err)
+	}
+	if err := second.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	third := openService("scheduler-plan-http-c")
+	defer third.Shutdown(t.Context())
+	thirdServer, err := saashttp.New(saashttp.Options{ApplicationTokens: map[string]string{ref.RuntimeID: "scheduler-token"}, Service: third})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{Endpoint: "http://scheduler.test", Token: "scheduler-token", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: thirdServer}}, CapabilityContractSHA256: capabilitySummary.Identity.ContractSHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err = thirdTransport.ListScheduledPlans(t.Context(), ref, schedulersdk.ScheduledPlanList{Owner: request.Owner, Limit: 10})
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != receipt.Plan.ID {
+		t.Fatalf("post-delete restart page=%+v err=%v", page, err)
+	}
+	if _, err := thirdTransport.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+		t.Fatalf("tombstone revived after restart err=%v", err)
 	}
 }
 
@@ -396,12 +771,14 @@ func TestDatabaseServiceUpgradeFromV3HydratesConfiguredRuntimeWithoutRequest(t *
 			value.id, value.definition.Key, value.definition.Key, value.definition.Name, raw, fmt.Sprint(value.revision), "legacy-v3-hash", "runtime_host", value.ref.RuntimeID, "now", "now"); insertErr != nil {
 			t.Fatal(insertErr)
 		}
-		runs, openErr := schedulerstore.NewStore(db, dialect, value.ref.RuntimeID, "legacy-v3-worker")
-		if openErr != nil {
-			t.Fatal(openErr)
+		state, stateErr := json.Marshal(value.definition)
+		if stateErr != nil {
+			t.Fatal(stateErr)
 		}
-		if reconcileErr := runs.Reconcile(t.Context(), value.definition, value.definition.InitialNextRunAt); reconcileErr != nil {
-			t.Fatal(reconcileErr)
+		if _, insertErr := db.ExecContext(t.Context(), `INSERT INTO _scheduler_definition_states
+			(runtime_id, definition_key, revision, enabled, definition_json, next_run_at, snapshot_revision, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, value.ref.RuntimeID, value.definition.Key, value.definition.Revision, true, state, value.definition.InitialNextRunAt.UTC().Format(time.RFC3339Nano), int64(0), time.Now().UTC().Format(time.RFC3339Nano)); insertErr != nil {
+			t.Fatal(insertErr)
 		}
 	}
 	dispatchedA := make(chan schedulersdk.Trigger, 1)

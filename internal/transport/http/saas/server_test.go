@@ -2,6 +2,8 @@ package saas
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +25,7 @@ type serviceStub struct {
 	application schedulersdk.ApplicationRef
 	reschedules int
 	closeCalls  int
+	plan        schedulersdk.ScheduledPlan
 }
 
 type handlerRoundTripper struct{ handler http.Handler }
@@ -96,6 +99,44 @@ func (s *serviceStub) Close(context.Context, schedulersdk.ApplicationRef) error 
 	s.closeCalls++
 	return nil
 }
+func (s *serviceStub) CreateScheduledPlan(_ context.Context, application schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanCreate) (schedulersdk.ScheduledPlanReceipt, error) {
+	s.called(application)
+	s.plan = schedulersdk.ScheduledPlan{ID: "plan-saas", Name: input.Name, Owner: input.Owner, Timezone: input.Timezone, Trigger: input.Trigger, Input: input.Input, AllowedActions: input.AllowedActions, Target: input.Target, ConversationRef: input.ConversationRef, Status: "enabled", Revision: 1}
+	return schedulersdk.ScheduledPlanReceipt{Plan: s.plan}, nil
+}
+func (s *serviceStub) GetScheduledPlan(_ context.Context, application schedulersdk.ApplicationRef, lookup schedulersdk.ScheduledPlanLookup) (schedulersdk.ScheduledPlan, error) {
+	s.called(application)
+	if lookup.PlanID != s.plan.ID || lookup.Owner != s.plan.Owner {
+		return schedulersdk.ScheduledPlan{}, schedulersdk.ErrScheduledPlanNotFound
+	}
+	return s.plan, nil
+}
+func (s *serviceStub) ListScheduledPlans(_ context.Context, application schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanList) (schedulersdk.ScheduledPlanPage, error) {
+	s.called(application)
+	if input.Owner != s.plan.Owner {
+		return schedulersdk.ScheduledPlanPage{Items: []schedulersdk.ScheduledPlan{}}, nil
+	}
+	return schedulersdk.ScheduledPlanPage{Items: []schedulersdk.ScheduledPlan{s.plan}}, nil
+}
+func (s *serviceStub) UpdateScheduledPlan(_ context.Context, application schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanUpdate) (schedulersdk.ScheduledPlanReceipt, error) {
+	s.called(application)
+	s.plan.Name, s.plan.Revision = input.Name, input.ExpectedRevision+1
+	return schedulersdk.ScheduledPlanReceipt{Plan: s.plan}, nil
+}
+func (s *serviceStub) PauseScheduledPlan(_ context.Context, application schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error) {
+	s.called(application)
+	s.plan.Status, s.plan.Revision = schedulersdk.ScheduledPlanStatusPaused, input.ExpectedRevision+1
+	return schedulersdk.ScheduledPlanReceipt{Plan: s.plan}, nil
+}
+func (s *serviceStub) ResumeScheduledPlan(_ context.Context, application schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error) {
+	s.called(application)
+	s.plan.Status, s.plan.Revision = schedulersdk.ScheduledPlanStatusEnabled, input.ExpectedRevision+1
+	return schedulersdk.ScheduledPlanReceipt{Plan: s.plan}, nil
+}
+func (s *serviceStub) DeleteScheduledPlan(_ context.Context, application schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanDeleteReceipt, error) {
+	s.called(application)
+	return schedulersdk.ScheduledPlanDeleteReceipt{PlanID: input.PlanID, Revision: input.ExpectedRevision + 1, Deleted: true}, nil
+}
 
 func TestServerAndSDKHTTPTransportPublishDefinitions(t *testing.T) {
 	service := &serviceStub{}
@@ -154,6 +195,36 @@ func TestServerAndSDKHTTPTransportPublishDefinitions(t *testing.T) {
 	}
 	if len(deadLetters) != 1 || deadLetters[0].RunID != "run-dead" {
 		t.Fatalf("dead letters=%+v", deadLetters)
+	}
+}
+
+func TestServerAndSDKTransportPreserveScheduledPlanOwnerScope(t *testing.T) {
+	service := &serviceStub{}
+	handler, err := New(Options{ApplicationTokens: map[string]string{"runtime-a": "secret"}, Service: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directCapability, _ := schedulercapability.NewBinding()
+	summary, _ := directCapability.CapabilitySummary(t.Context())
+	transport, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: "http://scheduler.test", Token: "secret", Client: &http.Client{Transport: handlerRoundTripper{handler: handler.Routes()}}, CapabilityContractSHA256: summary.Identity.ContractSHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}
+	owner := schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-a", ProductKey: "agent"}
+	at := time.Date(2026, 9, 18, 1, 0, 0, 0, time.UTC)
+	created, err := transport.CreateScheduledPlan(t.Context(), application, schedulersdk.ScheduledPlanCreate{ClientID: "friday", Name: "Friday reminder", Owner: owner, Timezone: "Asia/Shanghai", Trigger: schedulersdk.ScheduledPlanTrigger{Type: "once", At: &at}, Input: json.RawMessage(`{"status":"open"}`), AllowedActions: []string{"todo.list"}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"}, ConversationRef: schedulersdk.ScheduledPlanConversationRef{ConversationID: "conversation-a"}})
+	if err != nil || created.Plan.ID != "plan-saas" || service.application.RuntimeID != "runtime-a" {
+		t.Fatalf("created=%+v application=%+v err=%v", created, service.application, err)
+	}
+	loaded, err := transport.GetScheduledPlan(t.Context(), application, schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: created.Plan.ID})
+	if err != nil || loaded.ID != created.Plan.ID || loaded.ConversationRef.ConversationID != "conversation-a" {
+		t.Fatalf("loaded=%+v err=%v", loaded, err)
+	}
+	other := owner
+	other.UserID = "user-b"
+	if _, err := transport.GetScheduledPlan(t.Context(), application, schedulersdk.ScheduledPlanLookup{Owner: other, PlanID: created.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+		t.Fatalf("cross-user err=%v", err)
 	}
 }
 

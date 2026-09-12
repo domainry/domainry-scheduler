@@ -8,7 +8,7 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
 
-const SchemaVersion uint = 5
+const SchemaVersion uint = 7
 
 type Migration = ormmigration.Migration
 
@@ -74,12 +74,24 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build Scheduler definition publication table: %w", err)
 	}
+	scheduledPlanStatement, _, err := scheduledPlanTable(r).Build()
+	if err != nil {
+		return nil, fmt.Errorf("build Scheduler plan table: %w", err)
+	}
+	definitionStateSource, _, err := ormschema.NewAddColumn(r, "_scheduler_definition_states",
+		ormschema.Column("source_kind", ormschema.TextKey(32)).NotNull().DefaultValue("runtime_definition"),
+	).Build()
+	if err != nil {
+		return nil, fmt.Errorf("build Scheduler definition state source column: %w", err)
+	}
 	return []modulehost.SchemaMigration{
 		{Version: 1, Name: "scheduler_foundation", Statements: statements},
 		{Version: 2, Name: "scheduler_definition_ownership", Statements: []string{definitionStatement}},
 		{Version: 3, Name: "scheduler_command_idempotency", Statements: []string{commandReceiptStatement}},
 		{Version: 4, Name: "scheduler_definition_snapshot_state", Statements: []string{definitionSnapshotStatement}},
 		{Version: 5, Name: "scheduler_definition_publication_fencing", Statements: []string{definitionPublicationStatement}},
+		{Version: 6, Name: "scheduler_owned_plans", Statements: []string{scheduledPlanStatement}},
+		{Version: 7, Name: "scheduler_definition_state_sources", Statements: []string{definitionStateSource}},
 	}, nil
 }
 
@@ -141,6 +153,30 @@ func definitionPublicationTable(r modulehost.Dialect) *ormschema.TableBuilder {
 		optional("cursor_content_sha256", ormschema.TextKey(64)),
 		required("updated_at", ormschema.TextKey(40)),
 	).PrimaryKey("source_kind", "source_id")
+}
+
+func scheduledPlanTable(r modulehost.Dialect) *ormschema.TableBuilder {
+	return ormschema.NewTable(r, "_scheduler_plans").IfNotExists().Columns(
+		required("runtime_id", ormschema.TextKey(191)),
+		required("plan_id", ormschema.TextKey(191)),
+		required("client_id", ormschema.TextKey(191)),
+		required("request_sha256", ormschema.TextKey(64)),
+		required("workspace_id", ormschema.TextKey(191)),
+		required("user_id", ormschema.TextKey(191)),
+		required("product_key", ormschema.TextKey(191)),
+		required("name", ormschema.Text()),
+		required("timezone", ormschema.TextKey(128)),
+		required("trigger_json", ormschema.JSON()),
+		required("input_json", ormschema.JSON()),
+		required("allowed_actions_json", ormschema.JSON()),
+		required("target_json", ormschema.JSON()),
+		optional("source_conversation_id", ormschema.TextKey(191)),
+		optional("source_run_id", ormschema.TextKey(191)),
+		required("status", ormschema.TextKey(32)),
+		required("revision", ormschema.BigInt()),
+		required("created_at", ormschema.TextKey(40)),
+		required("updated_at", ormschema.TextKey(40)),
+	).PrimaryKey("runtime_id", "plan_id").Unique("runtime_id", "workspace_id", "user_id", "product_key", "client_id")
 }
 
 func required(name string, kind ormschema.ColumnType) ormschema.ColumnDefinition {

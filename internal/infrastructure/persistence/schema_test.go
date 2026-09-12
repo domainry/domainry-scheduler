@@ -15,12 +15,12 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(migrations) != 5 || len(migrations[0].Statements) != 4 || len(migrations[1].Statements) != 1 || len(migrations[2].Statements) != 1 || len(migrations[3].Statements) != 1 || len(migrations[4].Statements) != 1 {
+			if len(migrations) != 7 || len(migrations[0].Statements) != 4 || len(migrations[1].Statements) != 1 || len(migrations[2].Statements) != 1 || len(migrations[3].Statements) != 1 || len(migrations[4].Statements) != 1 || len(migrations[5].Statements) != 1 || len(migrations[6].Statements) != 1 {
 				t.Fatalf("unexpected migration inventory: %#v", migrations)
 			}
 			for _, migration := range migrations {
 				for _, statement := range migration.Statements {
-					if !strings.Contains(strings.ToLower(statement), "create table") {
+					if migration.Version < 7 && !strings.Contains(strings.ToLower(statement), "create table") {
 						t.Fatalf("expected ORM-rendered table statement, got %q", statement)
 					}
 				}
@@ -36,6 +36,12 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			}
 			if !strings.Contains(migrations[4].Statements[0], "_scheduler_definition_publications") {
 				t.Fatalf("Scheduler definition publication state is not source-owned: %q", migrations[4].Statements[0])
+			}
+			if !strings.Contains(migrations[5].Statements[0], "_scheduler_plans") {
+				t.Fatalf("Scheduler plan table is not source-owned: %q", migrations[5].Statements[0])
+			}
+			if !strings.Contains(migrations[6].Statements[0], "_scheduler_definition_states") || !strings.Contains(strings.ToLower(migrations[6].Statements[0]), "add column") || !strings.Contains(migrations[6].Statements[0], "source_kind") {
+				t.Fatalf("Scheduler definition state source migration is missing: %q", migrations[6].Statements[0])
 			}
 		})
 	}

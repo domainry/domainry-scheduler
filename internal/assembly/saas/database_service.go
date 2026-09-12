@@ -162,7 +162,91 @@ func (s *DatabaseService) Descriptor(ctx context.Context, ref schedulersdk.Appli
 	if _, err := s.application(ctx, ref); err != nil {
 		return schedulersdk.Descriptor{}, err
 	}
-	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityDefinitionPublicationFencing}}, nil
+	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityDefinitionPublicationFencing, schedulersdk.CapabilityScheduledPlanRecords}}, nil
+}
+
+func (s *DatabaseService) CreateScheduledPlan(ctx context.Context, ref schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanCreate) (schedulersdk.ScheduledPlanReceipt, error) {
+	app, err := s.application(ctx, ref)
+	if err != nil {
+		return schedulersdk.ScheduledPlanReceipt{}, err
+	}
+	plans, ok := app.binding.(schedulersdk.ScheduledPlanService)
+	if !ok {
+		return schedulersdk.ScheduledPlanReceipt{}, fmt.Errorf("Scheduler plan service is unavailable")
+	}
+	receipt, err := plans.CreateScheduledPlan(ctx, input)
+	if err != nil {
+		return schedulersdk.ScheduledPlanReceipt{}, err
+	}
+	app.mu.Lock()
+	app.ready = true
+	app.mu.Unlock()
+	app.startWorker(s.ctx, s.options.Worker)
+	return receipt, nil
+}
+
+func (s *DatabaseService) GetScheduledPlan(ctx context.Context, ref schedulersdk.ApplicationRef, lookup schedulersdk.ScheduledPlanLookup) (schedulersdk.ScheduledPlan, error) {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return schedulersdk.ScheduledPlan{}, err
+	}
+	plans, ok := binding.(schedulersdk.ScheduledPlanService)
+	if !ok {
+		return schedulersdk.ScheduledPlan{}, fmt.Errorf("Scheduler plan service is unavailable")
+	}
+	return plans.GetScheduledPlan(ctx, lookup)
+}
+
+func (s *DatabaseService) scheduledPlans(ctx context.Context, ref schedulersdk.ApplicationRef) (schedulersdk.ScheduledPlanService, error) {
+	binding, err := s.binding(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	plans, ok := binding.(schedulersdk.ScheduledPlanService)
+	if !ok {
+		return nil, fmt.Errorf("Scheduler plan service is unavailable")
+	}
+	return plans, nil
+}
+
+func (s *DatabaseService) ListScheduledPlans(ctx context.Context, ref schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanList) (schedulersdk.ScheduledPlanPage, error) {
+	plans, err := s.scheduledPlans(ctx, ref)
+	if err != nil {
+		return schedulersdk.ScheduledPlanPage{}, err
+	}
+	return plans.ListScheduledPlans(ctx, input)
+}
+
+func (s *DatabaseService) UpdateScheduledPlan(ctx context.Context, ref schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanUpdate) (schedulersdk.ScheduledPlanReceipt, error) {
+	plans, err := s.scheduledPlans(ctx, ref)
+	if err != nil {
+		return schedulersdk.ScheduledPlanReceipt{}, err
+	}
+	return plans.UpdateScheduledPlan(ctx, input)
+}
+
+func (s *DatabaseService) PauseScheduledPlan(ctx context.Context, ref schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error) {
+	plans, err := s.scheduledPlans(ctx, ref)
+	if err != nil {
+		return schedulersdk.ScheduledPlanReceipt{}, err
+	}
+	return plans.PauseScheduledPlan(ctx, input)
+}
+
+func (s *DatabaseService) ResumeScheduledPlan(ctx context.Context, ref schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error) {
+	plans, err := s.scheduledPlans(ctx, ref)
+	if err != nil {
+		return schedulersdk.ScheduledPlanReceipt{}, err
+	}
+	return plans.ResumeScheduledPlan(ctx, input)
+}
+
+func (s *DatabaseService) DeleteScheduledPlan(ctx context.Context, ref schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanDeleteReceipt, error) {
+	plans, err := s.scheduledPlans(ctx, ref)
+	if err != nil {
+		return schedulersdk.ScheduledPlanDeleteReceipt{}, err
+	}
+	return plans.DeleteScheduledPlan(ctx, input)
 }
 
 func (s *DatabaseService) BeginDefinitionPublisherSession(ctx context.Context, ref schedulersdk.ApplicationRef) (schedulersdk.DefinitionPublisherSession, error) {
@@ -204,8 +288,8 @@ func (s *DatabaseService) Reconcile(ctx context.Context, ref schedulersdk.Applic
 	return nil
 }
 
-// startWorker is deliberately called only after a real Runtime snapshot has
-// synchronized successfully. A read that lazily opens an application after a
+// startWorker is called after a real Runtime snapshot or a validated scheduled
+// plan has been persisted. A read that lazily opens an application after a
 // process restart must never publish an empty snapshot or disable durable
 // definitions.
 func (a *databaseApplication) startWorker(parent context.Context, worker schedulersdk.WorkerConfig) {

@@ -152,6 +152,55 @@ func (b *binding) ResolveDeadLetter(ctx context.Context, id, reason string) (sch
 func (b *binding) RequeueDeadLetter(ctx context.Context, id, reason string) (schedulersdk.Run, error) {
 	return b.transport.RequeueDeadLetter(ctx, b.application, id, reason)
 }
+func (b *binding) CreateScheduledPlan(ctx context.Context, input schedulersdk.ScheduledPlanCreate) (schedulersdk.ScheduledPlanReceipt, error) {
+	plans, ok := b.transport.(saashost.ScheduledPlanTransport)
+	if !ok || !b.descriptor.Supports(schedulersdk.CapabilityScheduledPlanRecords) {
+		return schedulersdk.ScheduledPlanReceipt{}, fmt.Errorf("Scheduler SaaS plan records are unavailable")
+	}
+	return plans.CreateScheduledPlan(ctx, b.application, input)
+}
+func (b *binding) GetScheduledPlan(ctx context.Context, lookup schedulersdk.ScheduledPlanLookup) (schedulersdk.ScheduledPlan, error) {
+	plans, ok := b.transport.(saashost.ScheduledPlanTransport)
+	if !ok || !b.descriptor.Supports(schedulersdk.CapabilityScheduledPlanRecords) {
+		return schedulersdk.ScheduledPlan{}, fmt.Errorf("Scheduler SaaS plan records are unavailable")
+	}
+	return plans.GetScheduledPlan(ctx, b.application, lookup)
+}
+func (b *binding) ListScheduledPlans(ctx context.Context, input schedulersdk.ScheduledPlanList) (schedulersdk.ScheduledPlanPage, error) {
+	plans, ok := b.transport.(saashost.ScheduledPlanTransport)
+	if !ok || !b.descriptor.Supports(schedulersdk.CapabilityScheduledPlanRecords) {
+		return schedulersdk.ScheduledPlanPage{}, fmt.Errorf("Scheduler SaaS plan records are unavailable")
+	}
+	return plans.ListScheduledPlans(ctx, b.application, input)
+}
+func (b *binding) UpdateScheduledPlan(ctx context.Context, input schedulersdk.ScheduledPlanUpdate) (schedulersdk.ScheduledPlanReceipt, error) {
+	plans, ok := b.transport.(saashost.ScheduledPlanTransport)
+	if !ok || !b.descriptor.Supports(schedulersdk.CapabilityScheduledPlanRecords) {
+		return schedulersdk.ScheduledPlanReceipt{}, fmt.Errorf("Scheduler SaaS plan records are unavailable")
+	}
+	return plans.UpdateScheduledPlan(ctx, b.application, input)
+}
+func (b *binding) PauseScheduledPlan(ctx context.Context, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error) {
+	plans, ok := b.transport.(saashost.ScheduledPlanTransport)
+	if !ok || !b.descriptor.Supports(schedulersdk.CapabilityScheduledPlanRecords) {
+		return schedulersdk.ScheduledPlanReceipt{}, fmt.Errorf("Scheduler SaaS plan records are unavailable")
+	}
+	return plans.PauseScheduledPlan(ctx, b.application, input)
+}
+func (b *binding) ResumeScheduledPlan(ctx context.Context, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error) {
+	plans, ok := b.transport.(saashost.ScheduledPlanTransport)
+	if !ok || !b.descriptor.Supports(schedulersdk.CapabilityScheduledPlanRecords) {
+		return schedulersdk.ScheduledPlanReceipt{}, fmt.Errorf("Scheduler SaaS plan records are unavailable")
+	}
+	return plans.ResumeScheduledPlan(ctx, b.application, input)
+}
+func (b *binding) DeleteScheduledPlan(ctx context.Context, input schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanDeleteReceipt, error) {
+	plans, ok := b.transport.(saashost.ScheduledPlanTransport)
+	if !ok || !b.descriptor.Supports(schedulersdk.CapabilityScheduledPlanRecords) {
+		return schedulersdk.ScheduledPlanDeleteReceipt{}, fmt.Errorf("Scheduler SaaS plan records are unavailable")
+	}
+	return plans.DeleteScheduledPlan(ctx, b.application, input)
+}
 func (b *binding) Start(ctx context.Context, _ schedulersdk.WorkerConfig) <-chan struct{} {
 	done := make(chan struct{})
 	if ctx == nil {
@@ -187,3 +236,4 @@ func (b *binding) Close(context.Context) error {
 var _ schedulersdk.Factory = Factory{}
 var _ saashost.Factory = Factory{}
 var _ schedulersdk.Binding = (*binding)(nil)
+var _ schedulersdk.ScheduledPlanService = (*binding)(nil)

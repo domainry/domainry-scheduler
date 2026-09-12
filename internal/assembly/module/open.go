@@ -84,6 +84,10 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	if err != nil {
 		return nil, err
 	}
+	plans, err := schedulerstore.NewScheduledPlanStore(host.Database(), host.Dialect(), applicationRef.RuntimeID)
+	if err != nil {
+		return nil, err
+	}
 	ownerCtx, cancel := context.WithCancel(ctx)
 	directHTTP := httpexecutor.New(host.HTTPConnections(), nil)
 	capabilityBinding, err := schedulercapability.Open(schedulercapability.Inputs{})
@@ -92,6 +96,7 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 		return nil, fmt.Errorf("build Scheduler capability disclosure: %w", err)
 	}
 	service := application.NewService(ownerCtx, cancel, applicationRef, host, directHTTP, runs, definitions, mode, capabilityBinding)
+	service.SetScheduledPlanRepository(plans)
 	if mode == schedulersdk.DeploymentModeModule {
 		commandReceipts, err := schedulerstore.NewCommandReceiptStore(host.Database(), host.Dialect(), applicationRef.RuntimeID)
 		if err != nil {

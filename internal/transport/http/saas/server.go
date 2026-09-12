@@ -36,6 +36,16 @@ type Service interface {
 	Close(context.Context, schedulersdk.ApplicationRef) error
 }
 
+type scheduledPlanService interface {
+	CreateScheduledPlan(context.Context, schedulersdk.ApplicationRef, schedulersdk.ScheduledPlanCreate) (schedulersdk.ScheduledPlanReceipt, error)
+	GetScheduledPlan(context.Context, schedulersdk.ApplicationRef, schedulersdk.ScheduledPlanLookup) (schedulersdk.ScheduledPlan, error)
+	ListScheduledPlans(context.Context, schedulersdk.ApplicationRef, schedulersdk.ScheduledPlanList) (schedulersdk.ScheduledPlanPage, error)
+	UpdateScheduledPlan(context.Context, schedulersdk.ApplicationRef, schedulersdk.ScheduledPlanUpdate) (schedulersdk.ScheduledPlanReceipt, error)
+	PauseScheduledPlan(context.Context, schedulersdk.ApplicationRef, schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error)
+	ResumeScheduledPlan(context.Context, schedulersdk.ApplicationRef, schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanReceipt, error)
+	DeleteScheduledPlan(context.Context, schedulersdk.ApplicationRef, schedulersdk.ScheduledPlanStatusChange) (schedulersdk.ScheduledPlanDeleteReceipt, error)
+}
+
 type Options struct {
 	// ApplicationTokens binds each private Runtime credential to exactly one
 	// Scheduler application. Request headers and URL parameters never select an
@@ -163,6 +173,86 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 				return
 			}
 		}
+	case "plans":
+		plans, ok := s.service.(scheduledPlanService)
+		if !ok {
+			http.Error(response, "Scheduler plan records are unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if len(parts) == 4 && request.Method == http.MethodPost {
+			var input schedulersdk.ScheduledPlanCreate
+			if !decode(response, request, &input) {
+				return
+			}
+			value, err = plans.CreateScheduledPlan(request.Context(), application, input)
+			break
+		}
+		if len(parts) == 4 && request.Method == http.MethodGet {
+			limit, limitErr := strconv.Atoi(request.URL.Query().Get("limit"))
+			if request.URL.Query().Get("limit") != "" && limitErr != nil {
+				err = schedulersdk.ErrScheduledPlanInvalid
+				break
+			}
+			value, err = plans.ListScheduledPlans(request.Context(), application, schedulersdk.ScheduledPlanList{
+				Owner: schedulersdk.ScheduledPlanOwner{
+					WorkspaceID: request.URL.Query().Get("workspace_id"), UserID: request.URL.Query().Get("user_id"), ProductKey: request.URL.Query().Get("product_key"),
+				},
+				Status: request.URL.Query().Get("status"), Cursor: request.URL.Query().Get("cursor"), Limit: limit,
+			})
+			break
+		}
+		if len(parts) == 5 && request.Method == http.MethodGet {
+			lookup := schedulersdk.ScheduledPlanLookup{
+				PlanID: parts[4],
+				Owner: schedulersdk.ScheduledPlanOwner{
+					WorkspaceID: request.URL.Query().Get("workspace_id"),
+					UserID:      request.URL.Query().Get("user_id"),
+					ProductKey:  request.URL.Query().Get("product_key"),
+				},
+			}
+			value, err = plans.GetScheduledPlan(request.Context(), application, lookup)
+			break
+		}
+		if len(parts) == 5 && request.Method == http.MethodPut {
+			var input schedulersdk.ScheduledPlanUpdate
+			if !decode(response, request, &input) {
+				return
+			}
+			if input.PlanID != parts[4] {
+				err = schedulersdk.ErrScheduledPlanInvalid
+				break
+			}
+			value, err = plans.UpdateScheduledPlan(request.Context(), application, input)
+			break
+		}
+		if len(parts) == 5 && request.Method == http.MethodDelete {
+			var input schedulersdk.ScheduledPlanStatusChange
+			if !decode(response, request, &input) {
+				return
+			}
+			if input.PlanID != parts[4] {
+				err = schedulersdk.ErrScheduledPlanInvalid
+				break
+			}
+			value, err = plans.DeleteScheduledPlan(request.Context(), application, input)
+			break
+		}
+		if len(parts) == 6 && request.Method == http.MethodPost {
+			var input schedulersdk.ScheduledPlanStatusChange
+			if !decode(response, request, &input) {
+				return
+			}
+			if input.PlanID != parts[4] {
+				err = schedulersdk.ErrScheduledPlanInvalid
+				break
+			}
+			switch parts[5] {
+			case "pause":
+				value, err = plans.PauseScheduledPlan(request.Context(), application, input)
+			case "resume":
+				value, err = plans.ResumeScheduledPlan(request.Context(), application, input)
+			}
+		}
 	case "definition-publication-sessions":
 		if len(parts) != 4 || request.Method != http.MethodPost {
 			break
@@ -281,6 +371,18 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if err != nil {
+		if errors.Is(err, schedulersdk.ErrScheduledPlanInvalid) {
+			http.Error(response, "Scheduler plan is invalid", http.StatusBadRequest)
+			return
+		}
+		if errors.Is(err, schedulersdk.ErrScheduledPlanConflict) {
+			http.Error(response, "Scheduler plan idempotency conflict", http.StatusConflict)
+			return
+		}
+		if errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+			http.Error(response, "Scheduler plan was not found", http.StatusNotFound)
+			return
+		}
 		if errors.Is(err, schedulersdk.ErrDefinitionPublicationRequired) {
 			http.Error(response, "Scheduler definition publisher session required", http.StatusBadRequest)
 			return

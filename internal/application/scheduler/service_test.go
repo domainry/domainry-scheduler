@@ -18,18 +18,21 @@ import (
 )
 
 type hostStub struct {
-	definition  schedulersdk.Definition
-	due         []modulehost.DueTrigger
-	dispatched  int
-	accepted    int
-	lease       bool
-	renewed     int
-	loseLease   bool
-	dispatchFn  func(context.Context) (schedulersdk.DownstreamReceipt, error)
-	snapshot    schedulerpersistence.DefinitionSnapshot
-	lastClaim   modulehost.DueTrigger
-	lastTrigger schedulersdk.Trigger
-	syncs       int
+	definition     schedulersdk.Definition
+	due            []modulehost.DueTrigger
+	dispatched     int
+	accepted       int
+	lease          bool
+	renewed        int
+	loseLease      bool
+	dispatchFn     func(context.Context) (schedulersdk.DownstreamReceipt, error)
+	snapshot       schedulerpersistence.DefinitionSnapshot
+	lastClaim      modulehost.DueTrigger
+	lastTrigger    schedulersdk.Trigger
+	syncs          int
+	planDefinition schedulersdk.Definition
+	planNext       time.Time
+	planEnabled    bool
 }
 
 type blockingDefinitionRepository struct {
@@ -413,7 +416,12 @@ func (h *hostStub) Snapshot(context.Context) (schedulersdk.DefinitionSnapshot, e
 	return schedulersdk.DefinitionSnapshot{Revision: 1, Definitions: []schedulersdk.Definition{h.definition}}, nil
 }
 func (*hostStub) Reconcile(context.Context, schedulersdk.Definition, time.Time) error { return nil }
-func (*hostStub) DisableMissing(context.Context, []string, int64) error               { return nil }
+
+func (h *hostStub) ReconcileScheduledPlan(_ context.Context, definition schedulersdk.Definition, next time.Time, enabled bool) error {
+	h.planDefinition, h.planNext, h.planEnabled = definition, next, enabled
+	return nil
+}
+func (*hostStub) DisableMissing(context.Context, []string, int64) error { return nil }
 func (*hostStub) ApplyDefinitionSnapshot(context.Context, schedulerpersistence.DefinitionSnapshot, time.Time) (bool, error) {
 	return true, nil
 }

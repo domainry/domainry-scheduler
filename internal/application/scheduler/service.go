@@ -27,6 +27,8 @@ type Service struct {
 	directHTTP           modulehost.Dispatcher
 	runs                 modulehost.RunStore
 	definitionRepository schedulerpersistence.DefinitionRepository
+	planRepository       schedulerpersistence.ScheduledPlanRepository
+	planRecovery         schedulerpersistence.ScheduledPlanRecoveryRepository
 	mode                 schedulersdk.DeploymentMode
 	ctx                  context.Context
 	cancel               context.CancelFunc
@@ -38,6 +40,7 @@ type Service struct {
 	lifecycleMu          sync.Mutex
 	workerDone           chan struct{}
 	closed               bool
+	now                  func() time.Time
 	capability           modulecapability.Binding
 	httpAdapters         []modulehttp.Adapter
 }
@@ -57,7 +60,7 @@ func NewService(ctx context.Context, cancel context.CancelFunc, application sche
 	if len(capabilities) != 0 {
 		capability = capabilities[0]
 	}
-	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute, capability: capability}
+	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: 5 * time.Minute, capability: capability, now: time.Now}
 }
 
 func (b *Service) CapabilitySummary(ctx context.Context) (modulecapability.ModuleSummary, error) {
@@ -80,7 +83,7 @@ func (b *Service) ValidateCapabilityCandidate(ctx context.Context, request modul
 }
 
 func (b *Service) Descriptor() schedulersdk.Descriptor {
-	capabilities := []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence"}
+	capabilities := []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityScheduledPlanRecords}
 	if b.mode == schedulersdk.DeploymentModeSaaS {
 		capabilities = append(capabilities, schedulersdk.CapabilityDefinitionPublicationFencing)
 	}
@@ -134,7 +137,12 @@ func (b *Service) HydrateDefinitions(ctx context.Context) (bool, error) {
 	if generation != b.reconcileGeneration.Load() {
 		return false, nil
 	}
-	return b.convergePersistedDefinitions(ctx)
+	definitions, err := b.convergePersistedDefinitions(ctx)
+	if err != nil {
+		return false, err
+	}
+	plans, err := b.hydrateScheduledPlans(ctx)
+	return definitions || plans, err
 }
 
 func (b *Service) reconcileSnapshot(ctx context.Context, snapshot schedulersdk.DefinitionSnapshot) error {
@@ -143,6 +151,9 @@ func (b *Service) reconcileSnapshot(ctx context.Context, snapshot schedulersdk.D
 	}
 	for _, definition := range snapshot.Definitions {
 		definition = definition.Normalize()
+		if strings.HasPrefix(definition.Key, scheduledPlanDefinitionPrefix) {
+			return fmt.Errorf("scheduler definition key %q uses the reserved plan namespace", definition.Key)
+		}
 		if err := definition.Validate(); err != nil {
 			return err
 		}
@@ -215,11 +226,14 @@ func (b *Service) convergePersistedDefinitions(ctx context.Context) (bool, error
 }
 
 func (b *Service) applyPersistedDefinitions(ctx context.Context, persisted schedulerpersistence.DefinitionSnapshot) (bool, error) {
-	now := time.Now().UTC()
+	now := b.now().UTC()
 	next := make(map[string]schedulersdk.Definition, len(persisted.Definitions))
 	active := make([]string, 0, len(persisted.Definitions))
 	for _, definition := range persisted.Definitions {
 		definition = definition.Normalize()
+		if strings.HasPrefix(definition.Key, scheduledPlanDefinitionPrefix) {
+			return false, fmt.Errorf("scheduler definition key %q uses the reserved plan namespace", definition.Key)
+		}
 		if err := definition.Validate(); err != nil {
 			return false, err
 		}
@@ -500,6 +514,7 @@ func (b *Service) runWorker(ctx context.Context, cancel context.CancelFunc, stop
 	// the initial empty SaaS host as a publication can disable durable state.
 	if b.mode == schedulersdk.DeploymentModeModule {
 		_ = b.Reconcile(ctx)
+		_, _ = b.hydrateScheduledPlans(ctx)
 	}
 	loopDone := worker.StartNamedLoop(ctx, "scheduler", config.PollInterval, func() {
 		_, _ = b.Tick(ctx, time.Now().UTC(), config.BatchSize)
