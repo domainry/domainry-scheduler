@@ -14,6 +14,7 @@ import (
 
 	"github.com/domainry/domainry-foundation/modulecapability"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
+	"github.com/domainry/domainry-scheduler-sdk/saashost"
 	capability "github.com/domainry/domainry-scheduler/internal/capability"
 )
 
@@ -201,6 +202,19 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			})
 			break
 		}
+		if len(parts) == 6 && parts[5] == "deletion-receipt" && request.Method == http.MethodGet {
+			reader, ok := s.service.(saashost.ScheduledPlanDeletionTransport)
+			if !ok {
+				err = schedulersdk.ErrScheduledPlanDeletionReadUnsupported
+				break
+			}
+			value, err = reader.ReadScheduledPlanDeletion(request.Context(), application, schedulersdk.ScheduledPlanLookup{
+				PlanID: parts[4], Owner: schedulersdk.ScheduledPlanOwner{
+					WorkspaceID: request.URL.Query().Get("workspace_id"), UserID: request.URL.Query().Get("user_id"), ProductKey: request.URL.Query().Get("product_key"),
+				},
+			})
+			break
+		}
 		if len(parts) == 5 && request.Method == http.MethodGet {
 			lookup := schedulersdk.ScheduledPlanLookup{
 				PlanID: parts[4],
@@ -371,6 +385,10 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if err != nil {
+		if errors.Is(err, schedulersdk.ErrScheduledPlanDeletionReadUnsupported) {
+			http.Error(response, "Scheduler plan deletion reading is unavailable", http.StatusNotImplemented)
+			return
+		}
 		if errors.Is(err, schedulersdk.ErrTriggerBacklogFull) {
 			http.Error(response, "Scheduler trigger backlog is full", http.StatusTooManyRequests)
 			return

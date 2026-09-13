@@ -88,7 +88,7 @@ func (b *Service) ValidateCapabilityCandidate(ctx context.Context, request modul
 }
 
 func (b *Service) Descriptor() schedulersdk.Descriptor {
-	capabilities := []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityScheduledPlanRecords, schedulersdk.CapabilityTriggerBacklog}
+	capabilities := []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityScheduledPlanRecords, schedulersdk.CapabilityScheduledPlanDeletionRead, schedulersdk.CapabilityTriggerBacklog}
 	if b.mode == schedulersdk.DeploymentModeSaaS {
 		capabilities = append(capabilities, schedulersdk.CapabilityDefinitionPublicationFencing)
 	}

@@ -13,6 +13,12 @@ state, run, lease, retry and dead-letter pipeline; it does not create a second
 worker or run table. Management UI and notifications are separate capabilities
 built on this record boundary.
 
+The optional `schedulersdk.ScheduledPlanDeletionReader` checks an existing
+owner-scoped tombstone and returns only its plan ID, revision and deleted flag.
+Module and SaaS expose the same read-only operation. It does not replay the
+delete command or repair definition state; product hosts authorize receipt
+reading separately. Ordinary plan get/list continue to hide deleted plans.
+
 Plan trigger policy is durable. One-time plans default to `catch_up_one` so a
 restart does not lose the single occurrence; recurring plans default to
 `skip` to avoid an unbounded burst. Callers may choose `catch_up_one` or

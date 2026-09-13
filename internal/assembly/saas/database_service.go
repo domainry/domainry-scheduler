@@ -162,7 +162,7 @@ func (s *DatabaseService) Descriptor(ctx context.Context, ref schedulersdk.Appli
 	if _, err := s.application(ctx, ref); err != nil {
 		return schedulersdk.Descriptor{}, err
 	}
-	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityDefinitionPublicationFencing, schedulersdk.CapabilityScheduledPlanRecords}}, nil
+	return schedulersdk.Descriptor{ProtocolVersion: schedulersdk.ProtocolVersionV1, Mode: schedulersdk.DeploymentModeSaaS, Capabilities: []string{"configuration_reconcile", "schedule_preview", "durable_trigger", "manual_trigger", "run_evidence", schedulersdk.CapabilityDefinitionPublicationFencing, schedulersdk.CapabilityScheduledPlanRecords, schedulersdk.CapabilityScheduledPlanDeletionRead}}, nil
 }
 
 func (s *DatabaseService) CreateScheduledPlan(ctx context.Context, ref schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanCreate) (schedulersdk.ScheduledPlanReceipt, error) {
