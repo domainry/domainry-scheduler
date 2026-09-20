@@ -1,5 +1,7 @@
 # Domainry Scheduler
 
+Agent-facing question index and source-owned guides: [`capability/agent/index.json`](capability/agent/index.json).
+
 `domainry-scheduler` owns recurrence planning, durable trigger orchestration and downstream dispatch evidence. It does not own Workflow, Report, Connector or other business execution semantics.
 
 It also owns product-authored scheduled plan records. A plan stores the
