@@ -15,7 +15,7 @@ import (
 	"github.com/domainry/domainry-foundation/modulecapability"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/saashost"
-	capability "github.com/domainry/domainry-scheduler/internal/capability"
+	capability "github.com/domainry/domainry-scheduler/capability"
 )
 
 type Service interface {
@@ -91,7 +91,7 @@ func New(options Options) (*Server, error) {
 	if len(credentials) == 0 {
 		return nil, fmt.Errorf("Scheduler SaaS application credentials are required")
 	}
-	binding, err := capability.NewBinding()
+	binding, err := capability.Open(capability.Inputs{})
 	if err != nil {
 		return nil, err
 	}

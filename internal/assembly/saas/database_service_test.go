@@ -17,7 +17,7 @@ import (
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerhttptransport "github.com/domainry/domainry-scheduler-sdk/saashost/httptransport"
-	schedulercapability "github.com/domainry/domainry-scheduler/internal/capability"
+	schedulercapability "github.com/domainry/domainry-scheduler/capability"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
 	schedulermigration "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database/migration"
 	saashttp "github.com/domainry/domainry-scheduler/internal/transport/http/saas"
@@ -190,7 +190,7 @@ func TestScheduledPlanWorkerRetriesOnceAfterSaaSRestartWithoutDuplicateWindow(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityBinding, err := schedulercapability.NewBinding()
+	capabilityBinding, err := schedulercapability.Open(schedulercapability.Inputs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityBinding, err := schedulercapability.NewBinding()
+	capabilityBinding, err := schedulercapability.Open(schedulercapability.Inputs{})
 	if err != nil {
 		t.Fatal(err)
 	}

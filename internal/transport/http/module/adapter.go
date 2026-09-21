@@ -438,17 +438,28 @@ func (a *adapter) definition(ctx context.Context, key string) (schedulersdk.Defi
 func projectDefinition(value schedulersdk.Definition) authoring.ManagementDefinition {
 	targetType, targetKey := projectTarget(value.Target)
 	result := authoring.ManagementDefinition{
-		Key: value.Key, Name: value.Name, Status: value.Status,
+		Key: value.Key, Name: value.Name, Description: value.Description, I18n: cloneRawMessages(value.I18n), Status: value.Status,
 		ScheduleType: value.Schedule.Type, ScheduleExpression: value.Schedule.Expression,
 		IntervalSeconds: value.Schedule.IntervalSeconds, TimeOfDay: value.Schedule.TimeOfDay,
 		DayOfWeek: value.Schedule.DayOfWeek, DayOfMonth: value.Schedule.DayOfMonth, Timezone: value.Schedule.Timezone,
-		TargetType: targetType, TargetKey: targetKey, MaxAttempts: value.Policy.MaxAttempts,
+		TargetType: targetType, TargetKey: targetKey, TargetObject: value.Target.ObjectKey, RunAsRole: value.Target.RunAsRole, ConnectionKey: value.Target.ConnectionKey, MaxAttempts: value.Policy.MaxAttempts,
 		TimeoutSeconds: int(value.Policy.Timeout / time.Second), MissedWindowPolicy: value.Policy.Misfire,
 		MaxCatchupWindows: value.Policy.MaxCatchupWindows, RetryDelaySeconds: int(value.Policy.RetryInitial / time.Second),
 		RetryMaxDelay: int(value.Policy.RetryMax / time.Second), PayloadJSON: string(value.Target.Payload),
 	}
 	if !value.InitialNextRunAt.IsZero() {
 		result.NextRunAt = value.InitialNextRunAt.UTC().Format(time.RFC3339)
+	}
+	return result
+}
+
+func cloneRawMessages(values map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[string]json.RawMessage, len(values))
+	for key, value := range values {
+		result[key] = append(json.RawMessage(nil), value...)
 	}
 	return result
 }

@@ -9,6 +9,7 @@
         "key": "daily_operations_snapshot",
         "max_attempts": 1,
         "missed_window_policy": "skip",
+        "name": "Daily operations snapshot",
         "schedule": {
           "time_of_day": "02:00",
           "timezone": "UTC"
@@ -22,18 +23,44 @@
     {
       "name": "representative",
       "value": {
-        "key": "order_approval_scan",
+        "business_calendar_key": "cn_operations",
+        "key": "order_expiration",
         "max_attempts": 3,
         "max_catchup_windows": 3,
         "missed_window_policy": "catch_up_bounded",
+        "name": "Expire overdue orders",
+        "non_working_day_policy": "roll_forward",
+        "payload_json": "{\"status\":\"overdue\"}",
+        "retry_delay_seconds": 10,
+        "retry_max_delay_seconds": 300,
+        "run_as_role": "order_automation",
         "schedule": {
-          "expression": "*/15 * * * *",
+          "expression": "0 9 * * *",
           "timezone": "Asia/Shanghai"
         },
         "status": "enabled",
-        "target_key": "order.approval",
-        "target_type": "workflow",
+        "target_key": "order.expire_overdue",
+        "target_object": "order",
+        "target_type": "business_action",
         "timeout_seconds": 1800
+      }
+    },
+    {
+      "name": "http_target",
+      "value": {
+        "connection_key": "partner_api",
+        "key": "partner_sync",
+        "max_attempts": 3,
+        "missed_window_policy": "skip",
+        "name": "Partner sync",
+        "payload_json": "{\"mode\":\"incremental\"}",
+        "schedule": {
+          "interval_seconds": 900
+        },
+        "status": "enabled",
+        "target_key": "sync_orders",
+        "target_type": "http",
+        "timeout_seconds": 120
       }
     }
   ],
@@ -41,6 +68,15 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
+      "business_calendar_key": {
+        "type": "string"
+      },
+      "connection_key": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
       "i18n": {
         "type": "object"
       },
@@ -55,7 +91,7 @@
       },
       "max_catchup_windows": {
         "type": "integer",
-        "minimum": 0,
+        "minimum": 1,
         "maximum": 100
       },
       "missed_window_policy": {
@@ -68,6 +104,31 @@
         "default": "skip"
       },
       "name": {
+        "type": "string"
+      },
+      "non_working_day_policy": {
+        "type": "string",
+        "enum": [
+          "roll_forward",
+          "skip"
+        ],
+        "default": "skip"
+      },
+      "payload_json": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "retry_delay_seconds": {
+        "type": "integer",
+        "default": 30,
+        "minimum": 0
+      },
+      "retry_max_delay_seconds": {
+        "type": "integer",
+        "default": 900,
+        "minimum": 0
+      },
+      "run_as_role": {
         "type": "string"
       },
       "schedule": {
@@ -169,21 +230,27 @@
       "status": {
         "type": "string",
         "enum": [
+          "archived",
+          "disabled",
           "draft",
           "enabled",
-          "paused",
-          "disabled"
+          "paused"
         ],
         "default": "draft"
       },
       "target_key": {
         "type": "string"
       },
+      "target_object": {
+        "type": "string"
+      },
       "target_type": {
         "type": "string",
         "enum": [
-          "workflow",
-          "report_snapshot_refresh"
+          "business_action",
+          "http",
+          "report_snapshot_refresh",
+          "workflow"
         ]
       },
       "timeout_seconds": {
@@ -195,6 +262,7 @@
     },
     "required": [
       "key",
+      "name",
       "status",
       "target_type",
       "target_key",
@@ -211,12 +279,32 @@
       "input_json_pointer": "/target_key",
       "scope_from": "/target_type",
       "resolver_endpoint": "/discovery/references/scheduler_target_key"
+    },
+    {
+      "kind": "object_key",
+      "input_json_pointer": "/target_object",
+      "resolver_endpoint": "/discovery/references/object_key"
+    },
+    {
+      "kind": "role_key",
+      "input_json_pointer": "/run_as_role",
+      "resolver_endpoint": "/discovery/references/role_key"
+    },
+    {
+      "kind": "connection_key",
+      "input_json_pointer": "/connection_key",
+      "resolver_endpoint": "/discovery/references/connection_key"
+    },
+    {
+      "kind": "business_calendar_key",
+      "input_json_pointer": "/business_calendar_key",
+      "resolver_endpoint": "/discovery/references/business_calendar_key"
     }
   ],
   "sources": [
     {
       "kind": "owner_module",
-      "path": "github.com/domainry/domainry-scheduler/internal/capability",
+      "path": "github.com/domainry/domainry-scheduler/capability",
       "symbol": "scheduledJobSource"
     }
   ]

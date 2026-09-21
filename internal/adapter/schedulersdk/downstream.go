@@ -52,7 +52,7 @@ type remoteDownstream struct {
 
 func (d remoteDownstream) Dispatch(ctx context.Context, trigger schedulersdk.Trigger) (schedulersdk.DownstreamReceipt, error) {
 	receipt, err := d.gateway.Dispatch(ctx, d.application, dispatchgateway.Request{
-		RuntimeID: d.application.RuntimeID, ExecutionID: trigger.RunID, IdempotencyKey: trigger.IdempotencyKey,
+		RuntimeID: d.application.RuntimeID, ExecutionID: trigger.RunID, DefinitionKey: trigger.DefinitionKey, IdempotencyKey: trigger.IdempotencyKey,
 		DueAt: trigger.ScheduledFor, Target: trigger.Target,
 	})
 	if err != nil {

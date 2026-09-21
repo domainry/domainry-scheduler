@@ -73,6 +73,33 @@ func TestScheduledPlanProjectionKeepsSourceBoundaryAndAppliesMisfirePolicies(t *
 	assertDefinitionCursor(t, db, bounded.Key, true, base.Add(6*time.Minute), "leased", "scheduled_plan")
 }
 
+func TestRuntimeDefinitionSkipsClosedBusinessCalendarDatesWithoutCreatingRuns(t *testing.T) {
+	db := openScheduledPlanExecutionDatabase(t, "business-calendar-skip")
+	defer db.Close()
+	dialect, _ := Renderer("sqlite", "")
+	store, _ := NewStore(db, dialect, "runtime-plan", "worker-a")
+	calendar := weekdayCalendarProtocol()
+	definition := schedulersdk.Definition{
+		Key: "weekday-daily", Name: "Weekday daily", Status: "enabled", Revision: "1|business_calendar:weekday@1",
+		Schedule: schedulersdk.Schedule{Type: "daily_at", TimeOfDay: "09:00", Timezone: "UTC", BusinessCalendar: calendar, NonWorkingDayPolicy: schedulersdk.NonWorkingDaySkip},
+		Target:   schedulersdk.TargetRef{Type: "runtime_operation", Owner: "workflow", Operation: "scheduled:daily"},
+		Policy:   schedulersdk.Policy{Misfire: schedulersdk.ScheduledPlanMisfireCatchMany, MaxCatchupWindows: 5},
+	}
+	saturday := time.Date(2026, 9, 19, 9, 0, 0, 0, time.UTC)
+	if err := store.Reconcile(t.Context(), definition, saturday); err != nil {
+		t.Fatal(err)
+	}
+	due, err := store.Due(t.Context(), time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC), 10)
+	if err != nil || len(due) != 0 {
+		t.Fatalf("closed-date due=%+v err=%v", due, err)
+	}
+	assertDefinitionCursor(t, db, definition.Key, true, time.Date(2026, 9, 21, 9, 0, 0, 0, time.UTC), "misfire_skipped", "runtime_definition")
+	var runs int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_runs WHERE runtime_id = ? AND definition_key = ?`, "runtime-plan", definition.Key).Scan(&runs); err != nil || runs != 0 {
+		t.Fatalf("runs=%d err=%v", runs, err)
+	}
+}
+
 func TestScheduledPlanWindowHasOneConcurrentClaim(t *testing.T) {
 	db := openScheduledPlanExecutionDatabase(t, "concurrent-claim")
 	defer db.Close()
@@ -183,6 +210,15 @@ func executionDefinition(key string, policy schedulersdk.Policy) schedulersdk.De
 		Target:   schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"},
 		Policy:   policy,
 	}
+}
+
+func weekdayCalendarProtocol() *schedulersdk.BusinessCalendarSnapshot {
+	days := []string{"monday", "tuesday", "wednesday", "thursday", "friday"}
+	weekly := make([]schedulersdk.BusinessCalendarWeeklySchedule, 0, len(days))
+	for _, day := range days {
+		weekly = append(weekly, schedulersdk.BusinessCalendarWeeklySchedule{Weekday: day, Intervals: []schedulersdk.BusinessCalendarTimeInterval{{Start: "09:00", End: "18:00"}}})
+	}
+	return &schedulersdk.BusinessCalendarSnapshot{Key: "weekday", Revision: "1", Timezone: "UTC", WeeklyWorkingIntervals: weekly}
 }
 
 func assertDefinitionCursor(t *testing.T, db *sql.DB, key string, enabled bool, want time.Time, status, source string) {

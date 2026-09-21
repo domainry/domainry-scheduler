@@ -151,7 +151,7 @@ func TestAdapterReadsDefinitionsPreviewsAndState(t *testing.T) {
 	if contract.Code != http.StatusOK || !strings.Contains(contract.Body.String(), `"mutation_owner":"source_controlled_json"`) {
 		t.Fatalf("contract=%d %s", contract.Code, contract.Body.String())
 	}
-	preview := serve(value, http.MethodPost, "/scheduler/definitions/validate", `{"data":{"target_type":"workflow","target_key":"scheduled:daily","schedule_type":"cron","schedule_expression":"0 9 * * *","timezone":"Asia/Shanghai"}}`, nil)
+	preview := serve(value, http.MethodPost, "/scheduler/definitions/validate", `{"data":{"key":"daily","name":"Daily","status":"enabled","target_type":"workflow","target_key":"scheduled:daily","schedule_type":"cron","schedule_expression":"0 9 * * *","timezone":"Asia/Shanghai","max_attempts":1,"timeout_seconds":300}}`, nil)
 	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), `"next_runs"`) {
 		t.Fatalf("preview=%d %s", preview.Code, preview.Body.String())
 	}

@@ -10,7 +10,7 @@ import (
 
 	sdk "github.com/domainry/domainry-scheduler-sdk"
 	transport "github.com/domainry/domainry-scheduler-sdk/saashost/httptransport"
-	capability "github.com/domainry/domainry-scheduler/internal/capability"
+	capability "github.com/domainry/domainry-scheduler/capability"
 	server "github.com/domainry/domainry-scheduler/internal/transport/http/saas"
 )
 
@@ -30,7 +30,7 @@ func TestDeletionReceiptHTTPReadsDurableTombstoneAfterRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		binding, err := capability.NewBinding()
+		binding, err := capability.Open(capability.Inputs{})
 		if err != nil {
 			t.Fatal(err)
 		}

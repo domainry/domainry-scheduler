@@ -19,7 +19,7 @@ import (
 )
 
 func TestSchedulerCapabilityPublishesCompleteSDKOperations(t *testing.T) {
-	binding, err := NewBinding()
+	binding, err := Open(Inputs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestSchedulerCapabilityPublishesCompleteSDKOperations(t *testing.T) {
 }
 
 func TestSchedulerCapabilityTracksExternalRoutesAuthoringAndValidation(t *testing.T) {
-	binding, err := NewBinding()
+	binding, err := Open(Inputs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func assertCapabilityCanonicalEqual(t *testing.T, left, right any) {
 }
 
 func TestSchedulerBlueprintSourceProjectionMatchesOwnerValidator(t *testing.T) {
-	binding, err := NewBinding()
+	binding, err := Open(Inputs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestSchedulerBlueprintSourceProjectionMatchesOwnerValidator(t *testing.T) {
 		t.Fatalf("Scheduler Blueprint source capability=%+v", capability)
 	}
 	properties := capability.InputSchema.Properties
-	for _, forbidden := range []string{"trigger_type", "schedule_type", "schedule_expression", "connection_key", "run_as_role"} {
+	for _, forbidden := range []string{"trigger_type", "schedule_type", "schedule_expression"} {
 		if _, exists := properties[forbidden]; exists {
 			t.Fatalf("flattened management field %q leaked into Blueprint source schema", forbidden)
 		}
@@ -191,6 +191,11 @@ func TestSchedulerBlueprintSourceProjectionMatchesOwnerValidator(t *testing.T) {
 	schedule, exists := properties["schedule"]
 	if !exists || len(schedule.OneOf) != 5 {
 		t.Fatalf("nested schedule schema=%+v", schedule)
+	}
+	for _, required := range []string{"target_object", "run_as_role", "connection_key", "payload_json", "business_calendar_key", "non_working_day_policy"} {
+		if _, exists := properties[required]; !exists {
+			t.Fatalf("Scheduler source schema is missing %q", required)
+		}
 	}
 
 	summary, err := binding.CapabilitySummary(t.Context())
@@ -255,7 +260,7 @@ func TestSchedulerBlueprintSourceRejectsRuntimeAndConflictingDerivedFields(t *te
 		"conflicting derived schedule type": json.RawMessage(`{"status":"enabled","target_type":"workflow","target_key":"daily","schedule":{"type":"cron","interval_seconds":60},"missed_window_policy":"skip","max_attempts":1,"timeout_seconds":300}`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			result, err := ValidateCandidate(t.Context(), modulecapability.ValidationRequest{
+			result, err := validateCandidate(t.Context(), modulecapability.ValidationRequest{
 				Kind: "scheduler.definition", Candidate: modulecapability.AuthoringFragment{Collection: "scheduled_jobs", Key: "daily", Value: value},
 			})
 			if err != nil || len(result.Diagnostics) != 1 {
@@ -282,6 +287,11 @@ func TestSchedulerBlueprintSourceCapabilityGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	actual = append(actual, '\n')
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile("testdata/scheduler-blueprint-source-capability.golden.json", actual, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	expected, err := os.ReadFile("testdata/scheduler-blueprint-source-capability.golden.json")
 	if err != nil {
 		t.Fatalf("read golden: %v\n%s", err, actual)

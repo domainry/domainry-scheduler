@@ -14,7 +14,7 @@ import (
 	"github.com/domainry/domainry-foundation/modulecapability/contracttest"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/saashost/httptransport"
-	schedulercapability "github.com/domainry/domainry-scheduler/internal/capability"
+	schedulercapability "github.com/domainry/domainry-scheduler/capability"
 )
 
 type serviceStub struct {
@@ -145,7 +145,7 @@ func TestServerAndSDKHTTPTransportPublishDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := &http.Client{Transport: handlerRoundTripper{handler: handler.Routes()}}
-	directCapability, err := schedulercapability.NewBinding()
+	directCapability, err := schedulercapability.Open(schedulercapability.Inputs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestServerAndSDKTransportPreserveScheduledPlanOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	directCapability, _ := schedulercapability.NewBinding()
+	directCapability, _ := schedulercapability.Open(schedulercapability.Inputs{})
 	summary, _ := directCapability.CapabilitySummary(t.Context())
 	transport, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: "http://scheduler.test", Token: "secret", Client: &http.Client{Transport: handlerRoundTripper{handler: handler.Routes()}}, CapabilityContractSHA256: summary.Identity.ContractSHA256})
 	if err != nil {

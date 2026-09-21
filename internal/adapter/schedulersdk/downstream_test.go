@@ -25,7 +25,7 @@ func TestRemoteDownstreamsDispatchesThroughRuntimeGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	receipt, err := host.Dispatch(t.Context(), schedulersdk.Trigger{RunID: "run-1", DefinitionKey: "definition-1", IdempotencyKey: "run-1"})
-	if err != nil || receipt.ID != "receipt-1" || gateway.request.RuntimeID != "runtime-a" || gateway.request.ExecutionID != "run-1" {
+	if err != nil || receipt.ID != "receipt-1" || gateway.request.RuntimeID != "runtime-a" || gateway.request.ExecutionID != "run-1" || gateway.request.DefinitionKey != "definition-1" {
 		t.Fatalf("receipt=%#v request=%#v err=%v", receipt, gateway.request, err)
 	}
 }

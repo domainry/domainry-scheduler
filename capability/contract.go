@@ -18,7 +18,7 @@ const (
 	SchedulerOperationsCategory = schedulersdk.CapabilitySchedulerOperations
 )
 
-func NewBinding() (*modulecapability.StaticBinding, error) {
+func openContract(_ Inputs) (*modulecapability.StaticBinding, error) {
 	routes, operations, err := schedulerHTTPContract()
 	if err != nil {
 		return nil, err
@@ -69,22 +69,17 @@ func NewBinding() (*modulecapability.StaticBinding, error) {
 			SupportedDeploymentModes: []modulecapability.DeploymentMode{modulecapability.DeploymentModeModule, modulecapability.DeploymentModeSaaS},
 		},
 		Name: "Scheduler", Description: "Owns clocks, recurring schedule evaluation, durable trigger claims, retry evidence, runs, and dead letters while downstream modules retain business execution semantics.",
-		Scenarios: modulecapability.AdaptationScenarios{
-			UseWhen:              []string{"A PRD needs work to run at a future or recurring time, manual scheduled-job execution, bounded catch-up, or durable retry and dead-letter recovery"},
-			DoNotUseWhen:         []string{"The requirement is an event-driven business reaction, a multi-step human workflow, retention cleanup ownership, or notification delivery without a time schedule"},
-			RequirementSignals:   []string{"cron", "daily weekly monthly schedule", "run at", "recurring job", "manual trigger", "retry run", "dead letter", "catch up"},
+		Composition: modulecapability.ModuleComposition{
 			ProvidedCapabilities: []string{"scheduler.business_job", "scheduler.schedule", "scheduler.job.simulate", "scheduler.job.run", "scheduler.definition.reschedule", "scheduler.run.retry", "scheduler.run.cancel", "scheduler.dead_letter.resolve", "scheduler.dead_letter.requeue", "scheduler.run_evidence"},
 			RequiredModules:      []string{}, OptionalModules: []string{"integration", "report", "workflow"}, ConflictingModules: []string{},
-			AssemblyChains:    []string{"workflow_or_report_target_to_scheduler_job", "integration_connection_to_scheduler_http_target", "scheduler_job_to_durable_run", "scheduler_dead_letter_to_operator_recovery"},
-			ValidationScopes:  []string{"scheduler.definition"},
-			SelectionExamples: []modulecapability.ScenarioExample{{Requirement: "Refresh a report snapshot every weekday at 09:00 and preserve retry evidence", Reason: "Scheduler owns recurrence, durable claims, retries, and run evidence while Report owns the refresh operation"}},
-			RejectionExamples: []modulecapability.ScenarioExample{{Requirement: "Send an Inbox message immediately when an order is approved", Reason: "That is event-driven Notification dispatch; Scheduler is selected only when time controls execution"}},
+			AssemblyChains:   []string{"workflow_or_report_target_to_scheduler_job", "integration_connection_to_scheduler_http_target", "scheduler_job_to_durable_run", "scheduler_dead_letter_to_operator_recovery"},
+			ValidationScopes: []string{"scheduler.definition"},
 		},
 	}
-	return modulecapability.NewStaticBinding(summary, documents, ValidateCandidate)
+	return modulecapability.NewStaticBinding(summary, documents, validateCandidate)
 }
 
-func ValidateCandidate(ctx context.Context, request modulecapability.ValidationRequest) (modulecapability.ValidationResult, error) {
+func validateCandidate(ctx context.Context, request modulecapability.ValidationRequest) (modulecapability.ValidationResult, error) {
 	var candidate scheduledJobSource
 	if err := modulecapability.DecodeKeyedAuthoringValue(request.Candidate, "key", &candidate); err != nil {
 		return invalidResult("scheduler.candidate_invalid", "$.candidate.value", nil, err), nil
@@ -128,17 +123,26 @@ func ValidateCandidate(ctx context.Context, request modulecapability.ValidationR
 }
 
 type scheduledJobSource struct {
-	Key                string                     `json:"key"`
-	Name               string                     `json:"name"`
-	Status             string                     `json:"status"`
-	TargetType         string                     `json:"target_type"`
-	TargetKey          string                     `json:"target_key"`
-	Schedule           scheduledJobScheduleSource `json:"schedule"`
-	MissedWindowPolicy string                     `json:"missed_window_policy"`
-	MaxCatchupWindows  int                        `json:"max_catchup_windows,omitempty"`
-	MaxAttempts        int                        `json:"max_attempts"`
-	TimeoutSeconds     int                        `json:"timeout_seconds"`
-	I18n               map[string]json.RawMessage `json:"i18n,omitempty"`
+	Key                  string                     `json:"key"`
+	Name                 string                     `json:"name"`
+	Status               string                     `json:"status"`
+	TargetType           string                     `json:"target_type"`
+	TargetKey            string                     `json:"target_key"`
+	TargetObject         string                     `json:"target_object,omitempty"`
+	RunAsRole            string                     `json:"run_as_role,omitempty"`
+	ConnectionKey        string                     `json:"connection_key,omitempty"`
+	PayloadJSON          string                     `json:"payload_json,omitempty"`
+	Schedule             scheduledJobScheduleSource `json:"schedule"`
+	BusinessCalendarKey  string                     `json:"business_calendar_key,omitempty"`
+	NonWorkingDayPolicy  string                     `json:"non_working_day_policy,omitempty"`
+	MissedWindowPolicy   string                     `json:"missed_window_policy"`
+	MaxCatchupWindows    int                        `json:"max_catchup_windows,omitempty"`
+	MaxAttempts          int                        `json:"max_attempts"`
+	RetryDelaySeconds    int                        `json:"retry_delay_seconds,omitempty"`
+	RetryMaxDelaySeconds int                        `json:"retry_max_delay_seconds,omitempty"`
+	TimeoutSeconds       int                        `json:"timeout_seconds"`
+	Description          string                     `json:"description,omitempty"`
+	I18n                 map[string]json.RawMessage `json:"i18n,omitempty"`
 }
 
 type scheduledJobScheduleSource struct {
@@ -189,8 +193,35 @@ func (value scheduledJobSource) runtimeData(scheduleType string) map[string]any 
 		"missed_window_policy": value.MissedWindowPolicy,
 		"max_attempts":         value.MaxAttempts, "timeout_seconds": value.TimeoutSeconds,
 	}
+	if value.TargetObject != "" {
+		result["target_object"] = value.TargetObject
+	}
+	if value.RunAsRole != "" {
+		result["run_as_role"] = value.RunAsRole
+	}
+	if value.ConnectionKey != "" {
+		result["connection_key"] = value.ConnectionKey
+	}
+	if value.PayloadJSON != "" {
+		result["payload_json"] = value.PayloadJSON
+	}
+	if value.BusinessCalendarKey != "" {
+		result["business_calendar_key"] = value.BusinessCalendarKey
+	}
+	if value.NonWorkingDayPolicy != "" {
+		result["non_working_day_policy"] = value.NonWorkingDayPolicy
+	}
 	if value.MaxCatchupWindows != 0 {
 		result["max_catchup_windows"] = value.MaxCatchupWindows
+	}
+	if value.RetryDelaySeconds != 0 {
+		result["retry_delay_seconds"] = value.RetryDelaySeconds
+	}
+	if value.RetryMaxDelaySeconds != 0 {
+		result["retry_max_delay_seconds"] = value.RetryMaxDelaySeconds
+	}
+	if value.Description != "" {
+		result["description"] = value.Description
 	}
 	if value.Schedule.Expression != "" {
 		result["schedule_expression"] = value.Schedule.Expression
@@ -215,7 +246,7 @@ func (value scheduledJobSource) runtimeData(scheduleType string) map[string]any 
 
 func validScheduledJobStatus(value string) bool {
 	switch strings.TrimSpace(value) {
-	case "draft", "enabled", "paused", "disabled":
+	case "archived", "draft", "enabled", "paused", "disabled":
 		return true
 	default:
 		return false

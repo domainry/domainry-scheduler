@@ -291,25 +291,16 @@ func (*Service) Preview(ctx context.Context, value schedulersdk.Schedule, after 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := schedule.Validate(value); err != nil {
-		return nil, err
-	}
 	if count <= 0 {
 		count = 5
 	}
 	if count > 100 {
 		count = 100
 	}
-	cursor := after
-	if cursor.IsZero() {
-		cursor = time.Now().UTC()
+	if after.IsZero() {
+		after = time.Now().UTC()
 	}
-	result := make([]time.Time, 0, count)
-	for len(result) < count {
-		cursor = schedule.NextSchedule(value, cursor)
-		result = append(result, cursor)
-	}
-	return result, nil
+	return schedule.PreviewSchedule(ctx, value, after, count)
 }
 
 func (b *Service) Tick(ctx context.Context, now time.Time, limit int) (int, error) {

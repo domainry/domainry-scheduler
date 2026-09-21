@@ -4,11 +4,10 @@ package capability
 
 import (
 	"github.com/domainry/domainry-foundation/modulecapability"
-	internalcapability "github.com/domainry/domainry-scheduler/internal/capability"
 )
 
 type Inputs struct{}
 
-func Open(Inputs) (*modulecapability.StaticBinding, error) {
-	return internalcapability.NewBinding()
+func Open(inputs Inputs) (*modulecapability.StaticBinding, error) {
+	return openContract(inputs)
 }
