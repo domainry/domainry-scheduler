@@ -183,7 +183,7 @@ func scheduledPlanTable(r modulehost.Dialect) *ormschema.TableBuilder {
 		required("revision", ormschema.BigInt()),
 		required("created_at", ormschema.TextKey(40)),
 		required("updated_at", ormschema.TextKey(40)),
-	).PrimaryKey("runtime_id", "plan_id").Unique("runtime_id", "workspace_id", "user_id", "product_key", "client_id")
+	).PrimaryKey("runtime_id", "plan_id")
 }
 
 func required(name string, kind ormschema.ColumnType) ormschema.ColumnDefinition {

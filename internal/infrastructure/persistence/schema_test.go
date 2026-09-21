@@ -40,6 +40,9 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			if !strings.Contains(migrations[5].Statements[0], "_scheduler_plans") {
 				t.Fatalf("Scheduler plan table is not source-owned: %q", migrations[5].Statements[0])
 			}
+			if driver == "mysql" && strings.Contains(strings.ToUpper(migrations[5].Statements[0]), "UNIQUE") {
+				t.Fatalf("Scheduler plan identity is already enforced by its deterministic plan ID and primary key; an additional utf8mb4 owner/client unique index exceeds MySQL's 3072-byte key limit: %q", migrations[5].Statements[0])
+			}
 			if !strings.Contains(migrations[6].Statements[0], "_scheduler_definition_states") || !strings.Contains(strings.ToLower(migrations[6].Statements[0]), "add column") || !strings.Contains(migrations[6].Statements[0], "source_kind") {
 				t.Fatalf("Scheduler definition state source migration is missing: %q", migrations[6].Statements[0])
 			}
