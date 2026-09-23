@@ -2,13 +2,20 @@ package schema
 
 import (
 	"fmt"
+
+	"github.com/domainry/domainry-foundation/schemaownership"
 	ormschema "github.com/domainry/domainry-orm/schema"
 
 	ormmigration "github.com/domainry/domainry-orm/migration"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
 
-const SchemaVersion uint = 1
+const (
+	SchemaVersion     uint = 1
+	MigrationOwner         = "scheduler"
+	ScheduleTableName      = "_scheduler_schedules"
+	RunTableName           = "_scheduler_runs"
+)
 
 type Migration = ormmigration.Migration
 
@@ -19,7 +26,7 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 		primary []string
 		unique  [][]string
 	}{
-		{name: "_scheduler_schedules", columns: []ormschema.ColumnDefinition{
+		{name: ScheduleTableName, columns: []ormschema.ColumnDefinition{
 			required("runtime_id", ormschema.TextKey(191)), required("schedule_id", ormschema.TextKey(191)),
 			required("kind", ormschema.TextKey(32)), required("source_kind", ormschema.TextKey(32)),
 			required("source_id", ormschema.TextKey(191)), optional("definition_revision", ormschema.TextKey(191)),
@@ -34,7 +41,7 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 			optional("plan_revision", ormschema.BigInt()), optional("plan_json", ormschema.JSON()),
 			required("created_at", ormschema.TextKey(40)), required("updated_at", ormschema.TextKey(40)),
 		}, primary: []string{"runtime_id", "schedule_id"}},
-		{name: "_scheduler_runs", columns: []ormschema.ColumnDefinition{
+		{name: RunTableName, columns: []ormschema.ColumnDefinition{
 			required("runtime_id", ormschema.TextKey(191)), required("run_id", ormschema.TextKey(191)),
 			required("definition_key", ormschema.TextKey(191)), required("definition_revision", ormschema.TextKey(191)),
 			required("scheduled_for", ormschema.TextKey(40)), required("window_key", ormschema.TextKey(191)),
@@ -63,6 +70,25 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 	}
 	return []modulehost.SchemaMigration{{Version: 1, Name: "scheduler_foundation", Statements: statements}}, nil
 }
+
+func SchemaOwnership() []schemaownership.Table {
+	return []schemaownership.Table{
+		{
+			Name: ScheduleTableName, Owner: MigrationOwner, WorkspaceScope: schemaownership.ScopeExplicitMixed,
+			RetentionClass: schemaownership.RetentionProduct, PrimaryKey: []string{"runtime_id", "schedule_id"},
+			BoundedQueryPath: "runtime plus schedule identity; workspace/user/product plan cursor and due-schedule scans enforce limits",
+			DeletionPolicy:   "scheduled plans are soft-deleted in status; definition and plan state remain for product retention",
+		},
+		{
+			Name: RunTableName, Owner: MigrationOwner, WorkspaceScope: schemaownership.ScopeExplicitMixed,
+			RetentionClass: schemaownership.RetentionProduct, PrimaryKey: []string{"runtime_id", "run_id"},
+			BoundedQueryPath: "runtime plus run identity; due, retry, history and dead-letter scans enforce limits",
+			DeletionPolicy:   "terminal and resolved dead-letter runs remain as product execution history; no physical purge path is registered",
+		},
+	}
+}
+
+func OwnedTables() []string { return schemaownership.Names(SchemaOwnership()) }
 
 func required(name string, kind ormschema.ColumnType) ormschema.ColumnDefinition {
 	return ormschema.Column(name, kind).NotNull()

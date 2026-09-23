@@ -7,6 +7,7 @@ import (
 	"context"
 
 	sharedoperation "github.com/domainry/domainry-foundation/operation"
+	"github.com/domainry/domainry-foundation/schemaownership"
 	sharedworkerscope "github.com/domainry/domainry-foundation/workerscope"
 	metadatasdk "github.com/domainry/domainry-metadata-sdk"
 	"github.com/domainry/domainry-orm/sqlhost"
@@ -21,6 +22,8 @@ type Store = schedulerstore.Store
 type DefinitionStore = schedulerstore.DefinitionStore
 type CommandReceiptStore = schedulerstore.CommandReceiptStore
 type ScheduledPlanStore = schedulerstore.ScheduledPlanStore
+
+const MigrationOwner = persistence.MigrationOwner
 
 func NewStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect, runtimeID, workerID string) (*Store, error) {
 	return schedulerstore.New(database, dialect, runtimeID, workerID)
@@ -42,6 +45,10 @@ func SchemaMigrations(driver, schema string) ([]schedulermodulehost.SchemaMigrat
 	return persistence.SchemaMigrations(driver, schema)
 }
 
+func SchemaOwnership() []schemaownership.Table { return persistence.SchemaOwnership() }
+
+func OwnedTables() []string { return persistence.OwnedTables() }
+
 func Renderer(driver, schema string) (schedulermodulehost.Dialect, error) {
 	return persistence.Renderer(driver, schema)
 }
@@ -55,7 +62,7 @@ func EnsureSchema(ctx context.Context, database sqlhost.Database, driver, schema
 	if err != nil {
 		return err
 	}
-	if err := migration.EnsureSchema(ctx, database, renderer, "scheduler", migrations); err != nil {
+	if err := migration.EnsureSchema(ctx, database, renderer, MigrationOwner, migrations); err != nil {
 		return err
 	}
 	_, err = sharedworkerscope.Open(ctx, database, renderer, schedulerSaaSWorkerScopeMigrations{database: database, renderer: renderer})

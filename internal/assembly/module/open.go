@@ -71,7 +71,7 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 		if err != nil {
 			return nil, err
 		}
-		if err := registrar.ApplyOwnedMigrations(ctx, "scheduler", migrations); err != nil {
+		if err := registrar.ApplyOwnedMigrations(ctx, schedulerstore.MigrationOwner, migrations); err != nil {
 			return nil, fmt.Errorf("apply Scheduler Module migrations: %w", err)
 		}
 	case schedulersdk.DeploymentModeSaaS:

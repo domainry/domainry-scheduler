@@ -9,6 +9,8 @@ github.com/domainry/domainry-foundation v0.1.4 h1:K+sA0ZqEVqf08TwvjNGXBAM5IB7ptf
 github.com/domainry/domainry-foundation v0.1.4/go.mod h1:pkwel8FFfbVkjAptEDWsA7BxaoPJM8kiQkOwPaIR7eI=
 github.com/domainry/domainry-foundation v0.1.33 h1:e6ZCWo8p8UdIqAUl4/kMsBoU8PnQVMdk4qCuwaiSIt4=
 github.com/domainry/domainry-foundation v0.1.33/go.mod h1:ccnHN+6FE4EKc6XP1ycz+ckU3XfgI9WDYKFyXuD+3/Q=
+github.com/domainry/domainry-foundation v0.1.36 h1:GatcO4VRoP71ON5oFOtpFoF4VzxaFheaK9XkPBumzFQ=
+github.com/domainry/domainry-foundation v0.1.36/go.mod h1:ccnHN+6FE4EKc6XP1ycz+ckU3XfgI9WDYKFyXuD+3/Q=
 github.com/domainry/domainry-metadata-sdk v0.1.5 h1:ILu8NpIehWBxJwGPkt5taHoJfUEsdvPunxINE++bX6s=
 github.com/domainry/domainry-metadata-sdk v0.1.5/go.mod h1:vklTpYZZZUHoLGlNwyx/xr/IFfUxWTtz5D4ytYCMBo0=
 github.com/domainry/domainry-orm v0.1.30 h1:5QOtG2qRzV1PhiioS2aKfCoEt9ab3OBucwicHAn/5HQ=
