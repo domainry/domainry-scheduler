@@ -3,9 +3,8 @@ module github.com/domainry/domainry-scheduler
 go 1.26.0
 
 require (
-	github.com/domainry/domainry-foundation v0.1.2
-	github.com/domainry/domainry-metadata v0.1.12
-	github.com/domainry/domainry-metadata-sdk v0.1.4
+	github.com/domainry/domainry-foundation v0.1.3
+	github.com/domainry/domainry-metadata-sdk v0.1.5
 	github.com/domainry/domainry-orm v0.1.30
 	github.com/domainry/domainry-scheduler-sdk v0.1.11
 	github.com/go-sql-driver/mysql v1.10.0
@@ -16,7 +15,6 @@ require (
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/domainry/domainry-identity-sdk v0.1.14 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

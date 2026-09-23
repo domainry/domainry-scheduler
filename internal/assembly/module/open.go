@@ -8,10 +8,9 @@ import (
 	"fmt"
 	"strings"
 
+	shareddefinition "github.com/domainry/domainry-foundation/definition"
 	foundationhttp "github.com/domainry/domainry-foundation/modulehttp"
 	metadatasdk "github.com/domainry/domainry-metadata-sdk"
-	metadatamodulehost "github.com/domainry/domainry-metadata-sdk/modulehost"
-	metadatamodule "github.com/domainry/domainry-metadata/module"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	httpexecutor "github.com/domainry/domainry-scheduler/internal/adapter/http"
@@ -80,10 +79,11 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	default:
 		return nil, fmt.Errorf("Scheduler deployment mode %q is unsupported", mode)
 	}
-	definitionsStore, err := metadatamodule.OpenDefinitionStore(ctx, metadatasdk.ApplicationRef{InstallationID: applicationRef.RuntimeID}, schedulerMetadataHost{host: host})
+	definitionKernel, err := shareddefinition.Open(ctx, applicationRef.RuntimeID, host.Database(), host.Dialect(), host.Migrations())
 	if err != nil {
 		return nil, fmt.Errorf("open Scheduler Definition persistence: %w", err)
 	}
+	definitionsStore := metadatasdk.AdaptDefinitionStore(definitionKernel)
 	runs, err := schedulerstore.NewStore(host.Database(), host.Dialect(), applicationRef.RuntimeID, host.WorkerID())
 	if err != nil {
 		return nil, err
@@ -119,20 +119,4 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 		service.SetHTTPAdapters([]foundationhttp.Adapter{adapter})
 	}
 	return service, nil
-}
-
-type schedulerMetadataHost struct{ host persistenceHost }
-
-func (h schedulerMetadataHost) Database() metadatamodulehost.Database { return h.host.Database() }
-func (h schedulerMetadataHost) Dialect() metadatamodulehost.Dialect   { return h.host.Dialect() }
-func (h schedulerMetadataHost) Migrations() metadatamodulehost.MigrationRegistrar {
-	return schedulerMetadataMigrations{registrar: h.host.Migrations()}
-}
-
-type schedulerMetadataMigrations struct{ registrar modulehost.MigrationRegistrar }
-
-func (m schedulerMetadataMigrations) Driver() string { return m.registrar.Driver() }
-func (m schedulerMetadataMigrations) Schema() string { return m.registrar.Schema() }
-func (m schedulerMetadataMigrations) ApplyOwnedMigrations(ctx context.Context, owner string, migrations []metadatamodulehost.SchemaMigration) error {
-	return m.registrar.ApplyOwnedMigrations(ctx, owner, migrations)
 }
