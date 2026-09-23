@@ -10,12 +10,10 @@ import (
 	"time"
 
 	sharedoperation "github.com/domainry/domainry-foundation/operation"
-	metadatasdk "github.com/domainry/domainry-metadata-sdk"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
-	definitionstore "github.com/domainry/domainry-scheduler/internal/testsupport/definitionstore"
 	operationstore "github.com/domainry/domainry-scheduler/internal/testsupport/operationstore"
 	_ "modernc.org/sqlite"
 )
@@ -23,15 +21,18 @@ import (
 type restartMigrationRegistrar struct {
 	mu      sync.Mutex
 	db      *sql.DB
-	applied bool
+	applied map[string]bool
 }
 
 func (*restartMigrationRegistrar) Driver() string { return "sqlite" }
 func (*restartMigrationRegistrar) Schema() string { return "" }
-func (r *restartMigrationRegistrar) ApplyOwnedMigrations(ctx context.Context, _ string, migrations []modulehost.SchemaMigration) error {
+func (r *restartMigrationRegistrar) ApplyOwnedMigrations(ctx context.Context, owner string, migrations []modulehost.SchemaMigration) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.applied {
+	if r.applied == nil {
+		r.applied = map[string]bool{}
+	}
+	if r.applied[owner] {
 		return nil
 	}
 	for _, migration := range migrations {
@@ -41,20 +42,19 @@ func (r *restartMigrationRegistrar) ApplyOwnedMigrations(ctx context.Context, _ 
 			}
 		}
 	}
-	r.applied = true
+	r.applied[owner] = true
 	return nil
 }
 
 type restartModuleHost struct {
-	db          *sql.DB
-	dialect     modulehost.Dialect
-	migrations  *restartMigrationRegistrar
-	definition  schedulersdk.Definition
-	mu          sync.Mutex
-	revision    int64
-	dispatch    chan schedulersdk.Trigger
-	operations  sharedoperation.Store
-	definitions metadatasdk.DefinitionStore
+	db         *sql.DB
+	dialect    modulehost.Dialect
+	migrations *restartMigrationRegistrar
+	definition schedulersdk.Definition
+	mu         sync.Mutex
+	revision   int64
+	dispatch   chan schedulersdk.Trigger
+	operations sharedoperation.Store
 }
 
 func (h *restartModuleHost) Definitions() modulehost.DefinitionProvider { return h }
@@ -73,14 +73,6 @@ func (h *restartModuleHost) OperationStore() sharedoperation.Store {
 		h.operations = operationstore.New()
 	}
 	return h.operations
-}
-func (h *restartModuleHost) DefinitionStore() metadatasdk.DefinitionStore {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.definitions == nil {
-		h.definitions = definitionstore.New()
-	}
-	return h.definitions
 }
 func (h *restartModuleHost) Snapshot(context.Context) (schedulersdk.DefinitionSnapshot, error) {
 	h.mu.Lock()

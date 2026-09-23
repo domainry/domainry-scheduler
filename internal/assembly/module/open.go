@@ -9,6 +9,9 @@ import (
 	"strings"
 
 	foundationhttp "github.com/domainry/domainry-foundation/modulehttp"
+	metadatasdk "github.com/domainry/domainry-metadata-sdk"
+	metadatamodulehost "github.com/domainry/domainry-metadata-sdk/modulehost"
+	metadatamodule "github.com/domainry/domainry-metadata/module"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	httpexecutor "github.com/domainry/domainry-scheduler/internal/adapter/http"
@@ -23,6 +26,7 @@ type SaaSHost interface {
 	modulehost.Host
 	Database() modulehost.Database
 	Dialect() modulehost.Dialect
+	Migrations() modulehost.MigrationRegistrar
 	Driver() string
 	Schema() string
 	WorkerID() string
@@ -32,6 +36,7 @@ type persistenceHost interface {
 	modulehost.Host
 	Database() modulehost.Database
 	Dialect() modulehost.Dialect
+	Migrations() modulehost.MigrationRegistrar
 	WorkerID() string
 }
 
@@ -46,7 +51,7 @@ func OpenSaaS(ctx context.Context, applicationRef schedulersdk.ApplicationRef, h
 	if host == nil {
 		return nil, fmt.Errorf("Scheduler SaaS host is required")
 	}
-	return open(ctx, applicationRef, host, schedulersdk.DeploymentModeSaaS, nil, host.Driver(), host.Schema())
+	return open(ctx, applicationRef, host, schedulersdk.DeploymentModeSaaS, host.Migrations(), host.Driver(), host.Schema())
 }
 
 func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host persistenceHost, mode schedulersdk.DeploymentMode, registrar modulehost.MigrationRegistrar, driver, schema string) (schedulersdk.Binding, error) {
@@ -55,10 +60,6 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	}
 	if host == nil || host.Database() == nil || host.Dialect() == nil || strings.TrimSpace(host.WorkerID()) == "" || host.Definitions() == nil || host.Dispatcher() == nil || host.HTTPConnections() == nil {
 		return nil, fmt.Errorf("Scheduler host is incomplete")
-	}
-	definitionHost, ok := host.(modulehost.DefinitionStoreHost)
-	if !ok || definitionHost.DefinitionStore() == nil {
-		return nil, fmt.Errorf("Scheduler shared Definition store is unavailable")
 	}
 	switch mode {
 	case schedulersdk.DeploymentModeModule:
@@ -79,11 +80,15 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	default:
 		return nil, fmt.Errorf("Scheduler deployment mode %q is unsupported", mode)
 	}
+	definitionsStore, err := metadatamodule.OpenDefinitionStore(ctx, metadatasdk.ApplicationRef{InstallationID: applicationRef.RuntimeID}, schedulerMetadataHost{host: host})
+	if err != nil {
+		return nil, fmt.Errorf("open Scheduler Definition persistence: %w", err)
+	}
 	runs, err := schedulerstore.NewStore(host.Database(), host.Dialect(), applicationRef.RuntimeID, host.WorkerID())
 	if err != nil {
 		return nil, err
 	}
-	definitions, err := schedulerstore.NewDefinitionStore(host.Database(), host.Dialect(), definitionHost.DefinitionStore(), applicationRef.RuntimeID, mode)
+	definitions, err := schedulerstore.NewDefinitionStore(host.Database(), host.Dialect(), definitionsStore, applicationRef.RuntimeID, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -114,4 +119,20 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 		service.SetHTTPAdapters([]foundationhttp.Adapter{adapter})
 	}
 	return service, nil
+}
+
+type schedulerMetadataHost struct{ host persistenceHost }
+
+func (h schedulerMetadataHost) Database() metadatamodulehost.Database { return h.host.Database() }
+func (h schedulerMetadataHost) Dialect() metadatamodulehost.Dialect   { return h.host.Dialect() }
+func (h schedulerMetadataHost) Migrations() metadatamodulehost.MigrationRegistrar {
+	return schedulerMetadataMigrations{registrar: h.host.Migrations()}
+}
+
+type schedulerMetadataMigrations struct{ registrar modulehost.MigrationRegistrar }
+
+func (m schedulerMetadataMigrations) Driver() string { return m.registrar.Driver() }
+func (m schedulerMetadataMigrations) Schema() string { return m.registrar.Schema() }
+func (m schedulerMetadataMigrations) ApplyOwnedMigrations(ctx context.Context, owner string, migrations []metadatamodulehost.SchemaMigration) error {
+	return m.registrar.ApplyOwnedMigrations(ctx, owner, migrations)
 }

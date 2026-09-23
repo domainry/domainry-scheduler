@@ -8,9 +8,6 @@ import (
 	"sync"
 	"time"
 
-	metadatasdk "github.com/domainry/domainry-metadata-sdk"
-	metadatamodulehost "github.com/domainry/domainry-metadata-sdk/modulehost"
-	metadatamodule "github.com/domainry/domainry-metadata/module"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
@@ -36,9 +33,6 @@ type DatabaseServiceOptions struct {
 	Worker       schedulersdk.WorkerConfig
 	Applications []schedulersdk.ApplicationRef
 	Downstreams  func(context.Context, schedulersdk.ApplicationRef) (DownstreamHost, error)
-	// DefinitionStore may be supplied by an embedding service. Standalone SaaS
-	// opens the Metadata module over the same database when it is nil.
-	DefinitionStore metadatasdk.DefinitionStore
 }
 
 // DatabaseService is the production SaaS implementation behind the HTTP
@@ -95,16 +89,6 @@ func NewDatabaseService(options DatabaseServiceOptions) (*DatabaseService, error
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	if options.DefinitionStore == nil {
-		binding, err := metadatamodule.NewFactory().OpenModule(ctx, metadatasdk.ApplicationRef{InstallationID: "scheduler-saas"}, schedulerMetadataHost{
-			database: options.Database, dialect: dialect, driver: options.Driver, schema: options.Schema,
-		})
-		if err != nil {
-			cancel()
-			return nil, fmt.Errorf("open Scheduler SaaS shared Definition store: %w", err)
-		}
-		options.DefinitionStore = binding.DefinitionStore()
-	}
 	service := &DatabaseService{options: options, dialect: dialect, ctx: ctx, cancel: cancel, applications: map[string]*databaseApplication{}, configured: map[string]bool{}}
 	for _, application := range options.Applications {
 		if err := application.Validate(); err != nil {
@@ -481,35 +465,22 @@ func (h *databaseApplicationHost) HTTPConnections() modulehost.HTTPConnectionPro
 }
 func (h *databaseApplicationHost) Database() modulehost.Database { return h.service.Database }
 func (h *databaseApplicationHost) Dialect() modulehost.Dialect   { return h.dialect }
-func (h *databaseApplicationHost) Driver() string                { return h.service.Driver }
-func (h *databaseApplicationHost) Schema() string                { return h.service.Schema }
-func (h *databaseApplicationHost) WorkerID() string              { return h.service.WorkerID }
-func (h *databaseApplicationHost) DefinitionStore() metadatasdk.DefinitionStore {
-	return h.service.DefinitionStore
+func (h *databaseApplicationHost) Migrations() modulehost.MigrationRegistrar {
+	return schedulerSaaSMigrations{host: h}
 }
+func (h *databaseApplicationHost) Driver() string   { return h.service.Driver }
+func (h *databaseApplicationHost) Schema() string   { return h.service.Schema }
+func (h *databaseApplicationHost) WorkerID() string { return h.service.WorkerID }
 func (h *databaseApplicationHost) Snapshot(context.Context) (schedulersdk.DefinitionSnapshot, error) {
 	return schedulersdk.DefinitionSnapshot{}, fmt.Errorf("Scheduler SaaS definitions arrive through the fenced publication protocol")
 }
 
 var _ moduleassembly.SaaSHost = (*databaseApplicationHost)(nil)
 
-type schedulerMetadataHost struct {
-	database *sql.DB
-	dialect  modulehost.Dialect
-	driver   string
-	schema   string
-}
+type schedulerSaaSMigrations struct{ host *databaseApplicationHost }
 
-func (h schedulerMetadataHost) Database() metadatamodulehost.Database { return h.database }
-func (h schedulerMetadataHost) Dialect() metadatamodulehost.Dialect   { return h.dialect }
-func (h schedulerMetadataHost) Migrations() metadatamodulehost.MigrationRegistrar {
-	return h
-}
-func (h schedulerMetadataHost) Driver() string { return h.driver }
-func (h schedulerMetadataHost) Schema() string { return h.schema }
-func (h schedulerMetadataHost) ApplyOwnedMigrations(ctx context.Context, owner string, migrations []metadatamodulehost.SchemaMigration) error {
-	if strings.TrimSpace(owner) != "metadata" {
-		return fmt.Errorf("Scheduler SaaS cannot install migration owner %q", owner)
-	}
-	return schedulermigration.EnsureSchema(ctx, h.database, h.dialect, "metadata", migrations)
+func (m schedulerSaaSMigrations) Driver() string { return m.host.service.Driver }
+func (m schedulerSaaSMigrations) Schema() string { return m.host.service.Schema }
+func (m schedulerSaaSMigrations) ApplyOwnedMigrations(ctx context.Context, owner string, migrations []modulehost.SchemaMigration) error {
+	return schedulermigration.EnsureSchema(ctx, m.host.service.Database, m.host.dialect, owner, migrations)
 }
