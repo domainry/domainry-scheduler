@@ -12,10 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/domainry/domainry-foundation/modulecapability"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/saashost"
-	capability "github.com/domainry/domainry-scheduler/capability"
 )
 
 type Service interface {
@@ -58,7 +56,6 @@ type Options struct {
 type Server struct {
 	credentials []applicationCredential
 	service     Service
-	capability  http.Handler
 }
 
 type applicationCredential struct {
@@ -91,15 +88,7 @@ func New(options Options) (*Server, error) {
 	if len(credentials) == 0 {
 		return nil, fmt.Errorf("Scheduler SaaS application credentials are required")
 	}
-	binding, err := capability.Open(capability.Inputs{})
-	if err != nil {
-		return nil, err
-	}
-	handler, err := modulecapability.NewHTTPHandler(binding, func(*http.Request) error { return nil })
-	if err != nil {
-		return nil, err
-	}
-	return &Server{credentials: credentials, service: options.Service, capability: handler}, nil
+	return &Server{credentials: credentials, service: options.Service}, nil
 }
 func (s *Server) Routes() http.Handler { return s }
 
@@ -115,10 +104,6 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	authenticated, ok := s.authenticate(request)
 	if !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if strings.HasPrefix(request.URL.Path, modulecapability.HTTPPrefix) {
-		s.capability.ServeHTTP(response, request)
 		return
 	}
 	parts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")

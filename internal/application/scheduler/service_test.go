@@ -15,6 +15,7 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
+	definitionstore "github.com/domainry/domainry-scheduler/internal/testsupport/definitionstore"
 	_ "modernc.org/sqlite"
 )
 
@@ -315,11 +316,12 @@ func TestSaaSProjectionCannotRegressAfterNewerCanonicalSnapshotCommits(t *testin
 		t.Fatal(err)
 	}
 	const runtimeID = "runtime-projection-fence"
-	canonicalA, err := schedulerstore.NewDefinitionStore(database, dialect, runtimeID, schedulersdk.DeploymentModeSaaS)
+	sharedDefinitions := definitionstore.New()
+	canonicalA, err := schedulerstore.NewDefinitionStore(database, dialect, sharedDefinitions, runtimeID, schedulersdk.DeploymentModeSaaS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalB, err := schedulerstore.NewDefinitionStore(database, dialect, runtimeID, schedulersdk.DeploymentModeSaaS)
+	canonicalB, err := schedulerstore.NewDefinitionStore(database, dialect, sharedDefinitions, runtimeID, schedulersdk.DeploymentModeSaaS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +380,7 @@ func TestSaaSProjectionCannotRegressAfterNewerCanonicalSnapshotCommits(t *testin
 	for _, key := range []string{"from-a", "from-b"} {
 		var raw string
 		var projectionRevision int64
-		if err := database.QueryRowContext(t.Context(), `SELECT definition_json, snapshot_revision FROM _scheduler_definition_states WHERE runtime_id = ? AND definition_key = ?`, runtimeID, key).Scan(&raw, &projectionRevision); err != nil {
+		if err := database.QueryRowContext(t.Context(), `SELECT definition_json, snapshot_revision FROM _scheduler_schedules WHERE runtime_id = ? AND schedule_id = ?`, runtimeID, key).Scan(&raw, &projectionRevision); err != nil {
 			t.Fatal(err)
 		}
 		if projectionRevision != 7 || !strings.Contains(raw, "revision-7") {

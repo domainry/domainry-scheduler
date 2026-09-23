@@ -9,17 +9,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	metadatasdk "github.com/domainry/domainry-metadata-sdk"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerhttptransport "github.com/domainry/domainry-scheduler-sdk/saashost/httptransport"
-	schedulercapability "github.com/domainry/domainry-scheduler/capability"
-	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
-	schedulermigration "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database/migration"
 	saashttp "github.com/domainry/domainry-scheduler/internal/transport/http/saas"
 	_ "modernc.org/sqlite"
 )
@@ -190,17 +187,9 @@ func TestScheduledPlanWorkerRetriesOnceAfterSaaSRestartWithoutDuplicateWindow(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityBinding, err := schedulercapability.Open(schedulercapability.Inputs{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilitySummary, err := capabilityBinding.CapabilitySummary(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
 	clientTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{
 		Endpoint: "http://scheduler.test", Token: "scheduler-token",
-		Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: firstServer}}, CapabilityContractSHA256: capabilitySummary.Identity.ContractSHA256,
+		Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: firstServer}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -259,11 +248,8 @@ func TestScheduledPlanWorkerRetriesOnceAfterSaaSRestartWithoutDuplicateWindow(t 
 		t.Fatalf("payload=%+v raw=%s err=%v", payload, recovered.Target.Payload, err)
 	}
 	waitSchedulerRunStatus(t, db, ref.RuntimeID, recovered.RunID, "succeeded")
-	var runs, retries int
+	var runs int
 	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_runs WHERE runtime_id = ? AND definition_key = ?`, ref.RuntimeID, "scheduled-plan:"+receipt.Plan.ID).Scan(&runs); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_run_events WHERE runtime_id = ? AND run_id = ? AND event_type = 'retry_scheduled'`, ref.RuntimeID, recovered.RunID).Scan(&retries); err != nil {
 		t.Fatal(err)
 	}
 	var attempt int
@@ -271,8 +257,8 @@ func TestScheduledPlanWorkerRetriesOnceAfterSaaSRestartWithoutDuplicateWindow(t 
 	if err := db.QueryRowContext(t.Context(), `SELECT attempt, fencing_token FROM _scheduler_runs WHERE runtime_id = ? AND run_id = ?`, ref.RuntimeID, recovered.RunID).Scan(&attempt, &fencing); err != nil {
 		t.Fatal(err)
 	}
-	if runs != 1 || retries != 1 || attempt != 2 || fencing != 2 {
-		t.Fatalf("runs=%d retries=%d attempt=%d fencing=%d", runs, retries, attempt, fencing)
+	if runs != 1 || attempt != 2 || fencing != 2 {
+		t.Fatalf("runs=%d attempt=%d fencing=%d", runs, attempt, fencing)
 	}
 	select {
 	case duplicate := <-succeededCalls:
@@ -339,15 +325,7 @@ func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityBinding, err := schedulercapability.Open(schedulercapability.Inputs{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilitySummary, err := capabilityBinding.CapabilitySummary(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	clientTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{Endpoint: "http://scheduler.test", Token: "scheduler-token", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: server}}, CapabilityContractSHA256: capabilitySummary.Identity.ContractSHA256})
+	clientTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{Endpoint: "http://scheduler.test", Token: "scheduler-token", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: server}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +362,7 @@ func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartedTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{Endpoint: "http://scheduler.test", Token: "scheduler-token", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: restarted}}, CapabilityContractSHA256: capabilitySummary.Identity.ContractSHA256})
+	restartedTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{Endpoint: "http://scheduler.test", Token: "scheduler-token", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: restarted}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +432,7 @@ func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	thirdTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{Endpoint: "http://scheduler.test", Token: "scheduler-token", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: thirdServer}}, CapabilityContractSHA256: capabilitySummary.Identity.ContractSHA256})
+	thirdTransport, err := schedulerhttptransport.Open(t.Context(), schedulerhttptransport.Config{Endpoint: "http://scheduler.test", Token: "scheduler-token", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: thirdServer}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,90 +707,6 @@ func TestDatabaseServiceConfiguredApplicationsAreAClosedTenantSet(t *testing.T) 
 	}
 }
 
-func TestDatabaseServiceUpgradeFromV3HydratesConfiguredRuntimeWithoutRequest(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:scheduler-saas-v3-upgrade-hydrate?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	dialect, err := schedulerstore.Renderer("sqlite", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	migrations, err := schedulerstore.SchemaMigrations("sqlite", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := schedulermigration.EnsureSchema(t.Context(), db, dialect, migrations[:3]); err != nil {
-		t.Fatal(err)
-	}
-	refA := schedulersdk.ApplicationRef{RuntimeID: "runtime-v3-a"}
-	refB := schedulersdk.ApplicationRef{RuntimeID: "runtime-v3-b"}
-	due := testDatabaseDefinition("legacy-due", "legacy-run-a")
-	due.InitialNextRunAt = time.Now().UTC().Add(-time.Minute)
-	future := testDatabaseDefinition("legacy-future", "legacy-run-b")
-	future.InitialNextRunAt = time.Now().UTC().Add(time.Hour)
-	for _, value := range []struct {
-		ref        schedulersdk.ApplicationRef
-		definition schedulersdk.Definition
-		revision   int64
-		id         string
-	}{
-		{ref: refA, definition: due, revision: 8, id: "scheduler:legacy-v3-a"},
-		{ref: refB, definition: future, revision: 5, id: "scheduler:legacy-v3-b"},
-	} {
-		raw, marshalErr := json.Marshal(value.definition)
-		if marshalErr != nil {
-			t.Fatal(marshalErr)
-		}
-		if _, insertErr := db.ExecContext(t.Context(), `INSERT INTO _scheduler_definitions
-			(id, resource_key, object_key, name, payload_json, schema_version, schema_hash, source_kind, source_id, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			value.id, value.definition.Key, value.definition.Key, value.definition.Name, raw, fmt.Sprint(value.revision), "legacy-v3-hash", "runtime_host", value.ref.RuntimeID, "now", "now"); insertErr != nil {
-			t.Fatal(insertErr)
-		}
-		state, stateErr := json.Marshal(value.definition)
-		if stateErr != nil {
-			t.Fatal(stateErr)
-		}
-		if _, insertErr := db.ExecContext(t.Context(), `INSERT INTO _scheduler_definition_states
-			(runtime_id, definition_key, revision, enabled, definition_json, next_run_at, snapshot_revision, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, value.ref.RuntimeID, value.definition.Key, value.definition.Revision, true, state, value.definition.InitialNextRunAt.UTC().Format(time.RFC3339Nano), int64(0), time.Now().UTC().Format(time.RFC3339Nano)); insertErr != nil {
-			t.Fatal(insertErr)
-		}
-	}
-	dispatchedA := make(chan schedulersdk.Trigger, 1)
-	dispatchedB := make(chan schedulersdk.Trigger, 1)
-	downstreams := map[string]*recordingDatabaseDownstream{
-		refA.RuntimeID: {dispatch: dispatchedA}, refB.RuntimeID: {dispatch: dispatchedB},
-	}
-	service, err := NewDatabaseService(DatabaseServiceOptions{
-		Context: t.Context(), Database: db, Driver: "sqlite", WorkerID: "scheduler-v4-upgrade",
-		Worker:       schedulersdk.WorkerConfig{Enabled: true, PollInterval: time.Millisecond, BatchSize: 10},
-		Applications: []schedulersdk.ApplicationRef{refA, refB},
-		Downstreams: func(_ context.Context, ref schedulersdk.ApplicationRef) (DownstreamHost, error) {
-			return downstreams[ref.RuntimeID], nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer service.Shutdown(t.Context())
-	select {
-	case trigger := <-dispatchedA:
-		if trigger.DefinitionKey != due.Key || trigger.Target.Operation != due.Target.Operation {
-			t.Fatalf("v3 runtime-a resumed wrong trigger=%+v", trigger)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("v3 active definition did not resume after v4 Scheduler-only upgrade")
-	}
-	select {
-	case trigger := <-dispatchedB:
-		t.Fatalf("v3 runtime-a restore dispatched runtime-b trigger=%+v", trigger)
-	default:
-	}
-}
-
 func testDatabaseDefinition(key, operation string) schedulersdk.Definition {
 	return schedulersdk.Definition{
 		Key: key, Name: key, Status: "enabled", Revision: "v1",
@@ -821,14 +715,32 @@ func testDatabaseDefinition(key, operation string) schedulersdk.Definition {
 	}
 }
 
-func assertActiveDefinitions(t *testing.T, db *sql.DB, runtimeID string, want int) {
+type persistedSchedulerDefinitionState struct {
+	Revision        int64                                  `json:"revision"`
+	Definitions     []schedulersdk.Definition              `json:"definitions"`
+	ActivePublisher *schedulersdk.DefinitionPublisherFence `json:"active_publisher,omitempty"`
+	Cursor          *schedulersdk.DefinitionSnapshotCursor `json:"cursor,omitempty"`
+}
+
+func sharedSchedulerDefinitionState(t *testing.T, db *sql.DB, runtimeID string) (persistedSchedulerDefinitionState, string) {
 	t.Helper()
-	var count int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_definitions WHERE source_kind = ? AND source_id = ? AND disabled_at IS NULL`, "runtime_host", runtimeID).Scan(&count); err != nil {
+	var payload []byte
+	var updatedAt string
+	if err := db.QueryRowContext(t.Context(), `SELECT payload_json, updated_at FROM _definitions WHERE owner = ? AND kind = ? AND definition_key = ? AND status = ?`, metadatasdk.DefinitionOwnerScheduler, "scheduler", runtimeID, "active").Scan(&payload, &updatedAt); err != nil {
 		t.Fatal(err)
 	}
-	if count != want {
-		t.Fatalf("runtime=%s active definitions=%d want=%d", runtimeID, count, want)
+	var state persistedSchedulerDefinitionState
+	if err := json.Unmarshal(payload, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state, updatedAt
+}
+
+func assertActiveDefinitions(t *testing.T, db *sql.DB, runtimeID string, want int) {
+	t.Helper()
+	state, _ := sharedSchedulerDefinitionState(t, db, runtimeID)
+	if len(state.Definitions) != want {
+		t.Fatalf("runtime=%s active definitions=%d want=%d", runtimeID, len(state.Definitions), want)
 	}
 }
 func (databaseDownstream) ResolveHTTPConnection(context.Context, string) (modulehost.HTTPConnection, error) {
@@ -962,17 +874,11 @@ func TestDatabaseServiceFencesPublisherTakeoverAndSurvivesRestart(t *testing.T) 
 	if err := first.Reconcile(t.Context(), ref, schedulersdk.DefinitionSnapshot{PublisherSession: &sessionB, Revision: 1, Definitions: []schedulersdk.Definition{definitionB}}); err != nil {
 		t.Fatalf("new session revision 1: %v", err)
 	}
-	var beforeReplay string
-	if err := db.QueryRowContext(t.Context(), `SELECT updated_at FROM _scheduler_definition_publications WHERE source_id = ?`, ref.RuntimeID).Scan(&beforeReplay); err != nil {
-		t.Fatal(err)
-	}
+	_, beforeReplay := sharedSchedulerDefinitionState(t, db, ref.RuntimeID)
 	if err := first.Reconcile(t.Context(), ref, schedulersdk.DefinitionSnapshot{PublisherSession: &sessionB, Revision: 1, Definitions: []schedulersdk.Definition{definitionB}}); err != nil {
 		t.Fatalf("exact replay: %v", err)
 	}
-	var afterReplay string
-	if err := db.QueryRowContext(t.Context(), `SELECT updated_at FROM _scheduler_definition_publications WHERE source_id = ?`, ref.RuntimeID).Scan(&afterReplay); err != nil {
-		t.Fatal(err)
-	}
+	_, afterReplay := sharedSchedulerDefinitionState(t, db, ref.RuntimeID)
 	if afterReplay != beforeReplay {
 		t.Fatalf("exact replay wrote publication row: before=%s after=%s", beforeReplay, afterReplay)
 	}
@@ -1002,10 +908,11 @@ func TestDatabaseServiceFencesPublisherTakeoverAndSurvivesRestart(t *testing.T) 
 	if err := second.Reconcile(t.Context(), ref, schedulersdk.DefinitionSnapshot{PublisherSession: &forged, Revision: 3, Definitions: []schedulersdk.Definition{definitionB2}}); !errors.Is(err, schedulersdk.ErrDefinitionPublicationSessionMismatch) {
 		t.Fatalf("forged session err=%v", err)
 	}
-	var persistedHash string
-	if err := db.QueryRowContext(t.Context(), `SELECT active_session_sha256 FROM _scheduler_definition_publications WHERE source_id = ?`, ref.RuntimeID).Scan(&persistedHash); err != nil {
-		t.Fatal(err)
+	persisted, _ := sharedSchedulerDefinitionState(t, db, ref.RuntimeID)
+	if persisted.ActivePublisher == nil {
+		t.Fatal("shared Scheduler definition state lost its active publisher fence")
 	}
+	persistedHash := persisted.ActivePublisher.SessionSHA256
 	if persistedHash == sessionB.SessionNonce || len(persistedHash) != 64 {
 		t.Fatalf("persisted session material=%q", persistedHash)
 	}
@@ -1039,16 +946,9 @@ func TestInvalidScheduleNeverReplacesDurableOrLiveSnapshot(t *testing.T) {
 	if err := service.Reconcile(t.Context(), ref, schedulersdk.DefinitionSnapshot{PublisherSession: &session, Revision: 2, Definitions: []schedulersdk.Definition{invalid}}); err == nil {
 		t.Fatal("invalid schedule was accepted")
 	}
-	var revision int64
-	var payload []byte
-	if err := db.QueryRowContext(t.Context(), `SELECT revision FROM _scheduler_definition_snapshots WHERE source_id = ?`, ref.RuntimeID).Scan(&revision); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(t.Context(), `SELECT payload_json FROM _scheduler_definitions WHERE source_id = ? AND disabled_at IS NULL`, ref.RuntimeID).Scan(&payload); err != nil {
-		t.Fatal(err)
-	}
-	if revision != 1 || !strings.Contains(string(payload), `"operation":"valid"`) {
-		t.Fatalf("revision=%d payload=%s", revision, payload)
+	persisted, _ := sharedSchedulerDefinitionState(t, db, ref.RuntimeID)
+	if persisted.Revision != 1 || len(persisted.Definitions) != 1 || persisted.Definitions[0].Target.Operation != "valid" {
+		t.Fatalf("persisted state=%+v", persisted)
 	}
 	if _, err := service.TriggerNow(t.Context(), ref, "shared", "previous snapshot remains live"); err != nil {
 		t.Fatalf("previous live snapshot was lost: %v", err)
@@ -1135,11 +1035,12 @@ func TestConcurrentPublisherBeginLeavesOnlyHighestGenerationActive(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var activeGeneration uint64
-	var activeSessionSHA256 string
-	if err := db.QueryRowContext(t.Context(), `SELECT active_generation, active_session_sha256 FROM _scheduler_definition_publications WHERE source_id = ?`, ref.RuntimeID).Scan(&activeGeneration, &activeSessionSHA256); err != nil {
-		t.Fatal(err)
+	persisted, _ := sharedSchedulerDefinitionState(t, db, ref.RuntimeID)
+	if persisted.ActivePublisher == nil {
+		t.Fatal("shared Scheduler definition state lost its active publisher fence")
 	}
+	activeGeneration := persisted.ActivePublisher.Generation
+	activeSessionSHA256 := persisted.ActivePublisher.SessionSHA256
 	if activeGeneration != highestFence.Generation || activeSessionSHA256 != highestFence.SessionSHA256 {
 		t.Fatalf("active fence=(%d,%s) highest returned=(%d,%s)", activeGeneration, activeSessionSHA256, highestFence.Generation, highestFence.SessionSHA256)
 	}
@@ -1207,16 +1108,9 @@ func TestTwoDatabaseServicesConvergeOnHighestRevisionInOneSession(t *testing.T) 
 			t.Fatalf("revision 6 err=%v", result.err)
 		}
 	}
-	var revision int64
-	var payload []byte
-	if err := db.QueryRowContext(t.Context(), `SELECT revision FROM _scheduler_definition_snapshots WHERE source_id = ?`, ref.RuntimeID).Scan(&revision); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(t.Context(), `SELECT payload_json FROM _scheduler_definitions WHERE source_id = ? AND disabled_at IS NULL`, ref.RuntimeID).Scan(&payload); err != nil {
-		t.Fatal(err)
-	}
-	if revision != 7 || !strings.Contains(string(payload), `"operation":"revision-7"`) {
-		t.Fatalf("revision=%d payload=%s", revision, payload)
+	persisted, _ := sharedSchedulerDefinitionState(t, db, ref.RuntimeID)
+	if persisted.Revision != 7 || len(persisted.Definitions) != 1 || persisted.Definitions[0].Target.Operation != "revision-7" {
+		t.Fatalf("persisted state=%+v", persisted)
 	}
 }
 

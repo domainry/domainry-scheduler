@@ -14,6 +14,8 @@ import (
 	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 )
 
+const scheduledPlanSchedulePrefix = "scheduled-plan:"
+
 type ScheduledPlanStore struct {
 	database  modulehost.Database
 	dialect   modulehost.Dialect
@@ -30,34 +32,25 @@ func NewScheduledPlanStore(database modulehost.Database, dialect modulehost.Dial
 
 func (s *ScheduledPlanStore) CreateScheduledPlan(ctx context.Context, record schedulerpersistence.ScheduledPlanRecord) (schedulersdk.ScheduledPlan, bool, error) {
 	plan := record.Plan
-	triggerJSON, err := json.Marshal(plan.Trigger)
+	payload, err := json.Marshal(plan)
 	if err != nil {
 		return schedulersdk.ScheduledPlan{}, false, err
 	}
-	actionsJSON, err := json.Marshal(plan.AllowedActions)
-	if err != nil {
-		return schedulersdk.ScheduledPlan{}, false, err
-	}
-	targetJSON, err := json.Marshal(plan.Target)
-	if err != nil {
-		return schedulersdk.ScheduledPlan{}, false, err
-	}
-	statement, args, err := query.NewInsertBuilder(s.dialect, "_scheduler_plans").Columns(
-		"runtime_id", "plan_id", "client_id", "request_sha256", "workspace_id", "user_id", "product_key", "name", "timezone",
-		"trigger_json", "input_json", "allowed_actions_json", "target_json", "source_conversation_id", "source_run_id", "status", "revision", "created_at", "updated_at",
+	statement, args, err := query.NewInsertBuilder(s.dialect, "_scheduler_schedules").Columns(
+		"runtime_id", "schedule_id", "kind", "source_kind", "source_id", "enabled", "snapshot_revision",
+		"client_id", "request_sha256", "workspace_id", "user_id", "product_key", "status", "plan_revision", "plan_json", "created_at", "updated_at",
 	).Values(
-		s.runtimeID, plan.ID, record.ClientID, record.RequestSHA256, plan.Owner.WorkspaceID, plan.Owner.UserID, plan.Owner.ProductKey, plan.Name, plan.Timezone,
-		string(triggerJSON), string(plan.Input), string(actionsJSON), string(targetJSON), nullable(plan.ConversationRef.ConversationID), nullable(plan.ConversationRef.RunID),
-		plan.Status, plan.Revision, formatTime(plan.CreatedAt), formatTime(plan.UpdatedAt),
-	).OnConflictDoNothing("runtime_id", "plan_id").Build()
+		s.runtimeID, scheduledPlanScheduleID(plan.ID), definitionStateSourcePlan, definitionStateSourcePlan, plan.ID,
+		plan.Status == schedulersdk.ScheduledPlanStatusEnabled, int64(0), record.ClientID, record.RequestSHA256,
+		plan.Owner.WorkspaceID, plan.Owner.UserID, plan.Owner.ProductKey, plan.Status, plan.Revision, string(payload),
+		formatTime(plan.CreatedAt), formatTime(plan.UpdatedAt),
+	).OnConflictDoNothing("runtime_id", "schedule_id").Build()
 	if err != nil {
 		return schedulersdk.ScheduledPlan{}, false, err
 	}
 	result, err := s.database.ExecContext(ctx, statement, args...)
-	if err != nil {
-		if !isUnique(err) {
-			return schedulersdk.ScheduledPlan{}, false, err
-		}
+	if err != nil && !isUnique(err) {
+		return schedulersdk.ScheduledPlan{}, false, err
 	}
 	affected := int64(0)
 	if err == nil {
@@ -84,20 +77,18 @@ func (s *ScheduledPlanStore) ListScheduledPlans(ctx context.Context, input sched
 		limit = 50
 	}
 	predicates := []query.Predicate{
-		query.Equal("runtime_id", s.runtimeID),
-		query.Equal("workspace_id", input.Owner.WorkspaceID),
-		query.Equal("user_id", input.Owner.UserID),
-		query.Equal("product_key", input.Owner.ProductKey),
-		query.NotEqual("status", schedulersdk.ScheduledPlanStatusDeleted),
+		query.Equal("runtime_id", s.runtimeID), query.Equal("kind", definitionStateSourcePlan),
+		query.Equal("workspace_id", input.Owner.WorkspaceID), query.Equal("user_id", input.Owner.UserID),
+		query.Equal("product_key", input.Owner.ProductKey), query.NotEqual("status", schedulersdk.ScheduledPlanStatusDeleted),
 	}
 	if input.Status != "" {
 		predicates = append(predicates, query.Equal("status", input.Status))
 	}
 	if input.Cursor != "" {
-		predicates = append(predicates, query.GreaterThan("plan_id", input.Cursor))
+		predicates = append(predicates, query.GreaterThan("source_id", input.Cursor))
 	}
-	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_plans").Columns("plan_id").
-		Where(query.And(predicates...)).OrderBy(query.Ascending("plan_id")).Limit(limit + 1).Build()
+	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_schedules").Columns("source_id").
+		Where(query.And(predicates...)).OrderBy(query.Ascending("source_id")).Limit(limit + 1).Build()
 	if err != nil {
 		return schedulersdk.ScheduledPlanPage{}, err
 	}
@@ -136,26 +127,17 @@ func (s *ScheduledPlanStore) ListScheduledPlans(ctx context.Context, input sched
 // revision predicate. The plan owner and ID are in the predicate, so a caller
 // cannot turn a successful CAS into a cross-owner move.
 func (s *ScheduledPlanStore) ReplaceScheduledPlan(ctx context.Context, plan schedulersdk.ScheduledPlan, expectedRevision int64) (schedulersdk.ScheduledPlan, error) {
-	triggerJSON, actionsJSON, targetJSON, err := scheduledPlanJSON(plan)
+	payload, err := json.Marshal(plan)
 	if err != nil {
 		return schedulersdk.ScheduledPlan{}, err
 	}
-	statement, args, err := query.NewUpdateBuilder(s.dialect, "_scheduler_plans").
-		Set("name", plan.Name).
-		Set("timezone", plan.Timezone).
-		Set("trigger_json", triggerJSON).
-		Set("input_json", string(plan.Input)).
-		Set("allowed_actions_json", actionsJSON).
-		Set("target_json", targetJSON).
-		Set("source_conversation_id", nullable(plan.ConversationRef.ConversationID)).
-		Set("source_run_id", nullable(plan.ConversationRef.RunID)).
-		Set("status", plan.Status).
-		Set("revision", plan.Revision).
-		Set("updated_at", formatTime(plan.UpdatedAt)).
+	statement, args, err := query.NewUpdateBuilder(s.dialect, "_scheduler_schedules").
+		Set("status", plan.Status).Set("plan_revision", plan.Revision).Set("plan_json", string(payload)).Set("updated_at", formatTime(plan.UpdatedAt)).
 		Where(query.And(
-			query.Equal("runtime_id", s.runtimeID), query.Equal("plan_id", plan.ID),
-			query.Equal("workspace_id", plan.Owner.WorkspaceID), query.Equal("user_id", plan.Owner.UserID),
-			query.Equal("product_key", plan.Owner.ProductKey), query.Equal("revision", expectedRevision),
+			query.Equal("runtime_id", s.runtimeID), query.Equal("schedule_id", scheduledPlanScheduleID(plan.ID)),
+			query.Equal("kind", definitionStateSourcePlan), query.Equal("workspace_id", plan.Owner.WorkspaceID),
+			query.Equal("user_id", plan.Owner.UserID), query.Equal("product_key", plan.Owner.ProductKey),
+			query.Equal("plan_revision", expectedRevision),
 		)).Build()
 	if err != nil {
 		return schedulersdk.ScheduledPlan{}, err
@@ -182,13 +164,13 @@ func (s *ScheduledPlanStore) ListScheduledPlansForRecovery(ctx context.Context, 
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	predicate := query.Predicate(query.Equal("runtime_id", s.runtimeID))
+	predicate := query.Predicate(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("kind", definitionStateSourcePlan)))
 	if after = strings.TrimSpace(after); after != "" {
-		predicate = query.And(predicate, query.GreaterThan("plan_id", after))
+		predicate = query.And(predicate, query.GreaterThan("source_id", after))
 	}
-	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_plans").Columns(
-		"plan_id", "workspace_id", "user_id", "product_key",
-	).Where(predicate).OrderBy(query.Ascending("plan_id")).Limit(limit).Build()
+	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_schedules").Columns(
+		"source_id", "workspace_id", "user_id", "product_key",
+	).Where(predicate).OrderBy(query.Ascending("source_id")).Limit(limit).Build()
 	if err != nil {
 		return nil, err
 	}
@@ -224,60 +206,31 @@ func (s *ScheduledPlanStore) ListScheduledPlansForRecovery(ctx context.Context, 
 }
 
 func (s *ScheduledPlanStore) getScheduledPlan(ctx context.Context, owner schedulersdk.ScheduledPlanOwner, planID string) (schedulersdk.ScheduledPlan, string, string, error) {
-	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_plans").Columns(
-		"client_id", "request_sha256", "name", "timezone", "trigger_json", "input_json", "allowed_actions_json", "target_json",
-		"source_conversation_id", "source_run_id", "status", "revision", "created_at", "updated_at",
-	).Where(query.And(
-		query.Equal("runtime_id", s.runtimeID), query.Equal("plan_id", planID), query.Equal("workspace_id", owner.WorkspaceID),
+	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_schedules").Columns("client_id", "request_sha256", "plan_json").Where(query.And(
+		query.Equal("runtime_id", s.runtimeID), query.Equal("schedule_id", scheduledPlanScheduleID(planID)),
+		query.Equal("kind", definitionStateSourcePlan), query.Equal("workspace_id", owner.WorkspaceID),
 		query.Equal("user_id", owner.UserID), query.Equal("product_key", owner.ProductKey),
 	)).Build()
 	if err != nil {
 		return schedulersdk.ScheduledPlan{}, "", "", err
 	}
-	var clientID, requestSHA256, name, timezone, triggerJSON, inputJSON, actionsJSON, targetJSON, status, createdAt, updatedAt string
-	var conversationID, runID sql.NullString
-	var revision int64
-	if err := s.database.QueryRowContext(ctx, statement, args...).Scan(
-		&clientID, &requestSHA256, &name, &timezone, &triggerJSON, &inputJSON, &actionsJSON, &targetJSON,
-		&conversationID, &runID, &status, &revision, &createdAt, &updatedAt,
-	); err != nil {
+	var clientID, requestSHA256, payload string
+	if err := s.database.QueryRowContext(ctx, statement, args...).Scan(&clientID, &requestSHA256, &payload); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return schedulersdk.ScheduledPlan{}, "", "", schedulersdk.ErrScheduledPlanNotFound
 		}
 		return schedulersdk.ScheduledPlan{}, "", "", err
 	}
-	plan := schedulersdk.ScheduledPlan{
-		ID: planID, Name: name, Owner: owner, Timezone: timezone, Input: json.RawMessage(inputJSON),
-		ConversationRef: schedulersdk.ScheduledPlanConversationRef{ConversationID: conversationID.String, RunID: runID.String},
-		Status:          status, Revision: revision, CreatedAt: parseTime(createdAt), UpdatedAt: parseTime(updatedAt),
-	}
-	if err := json.Unmarshal([]byte(triggerJSON), &plan.Trigger); err != nil {
+	var plan schedulersdk.ScheduledPlan
+	if err := json.Unmarshal([]byte(payload), &plan); err != nil {
 		return schedulersdk.ScheduledPlan{}, "", "", err
 	}
-	if err := json.Unmarshal([]byte(actionsJSON), &plan.AllowedActions); err != nil {
-		return schedulersdk.ScheduledPlan{}, "", "", err
-	}
-	if err := json.Unmarshal([]byte(targetJSON), &plan.Target); err != nil {
-		return schedulersdk.ScheduledPlan{}, "", "", err
+	if strings.TrimSpace(plan.ID) != strings.TrimSpace(planID) || plan.Owner != owner {
+		return schedulersdk.ScheduledPlan{}, "", "", fmt.Errorf("Scheduler plan %q has inconsistent persisted identity", planID)
 	}
 	return plan, clientID, requestSHA256, nil
 }
 
-func scheduledPlanJSON(plan schedulersdk.ScheduledPlan) (string, string, string, error) {
-	trigger, err := json.Marshal(plan.Trigger)
-	if err != nil {
-		return "", "", "", err
-	}
-	actions, err := json.Marshal(plan.AllowedActions)
-	if err != nil {
-		return "", "", "", err
-	}
-	target, err := json.Marshal(plan.Target)
-	if err != nil {
-		return "", "", "", err
-	}
-	return string(trigger), string(actions), string(target), nil
+func scheduledPlanScheduleID(planID string) string {
+	return scheduledPlanSchedulePrefix + strings.TrimSpace(planID)
 }
-
-var _ schedulerpersistence.ScheduledPlanRepository = (*ScheduledPlanStore)(nil)
-var _ schedulerpersistence.ScheduledPlanRecoveryRepository = (*ScheduledPlanStore)(nil)

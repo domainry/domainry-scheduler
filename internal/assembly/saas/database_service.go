@@ -8,12 +8,16 @@ import (
 	"sync"
 	"time"
 
+	metadatasdk "github.com/domainry/domainry-metadata-sdk"
+	metadatamodulehost "github.com/domainry/domainry-metadata-sdk/modulehost"
+	metadatamodule "github.com/domainry/domainry-metadata/module"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	schedulersdkadapter "github.com/domainry/domainry-scheduler/internal/adapter/schedulersdk"
 	moduleassembly "github.com/domainry/domainry-scheduler/internal/assembly/module"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence"
+	schedulermigration "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database/migration"
 )
 
 type DownstreamHost = schedulersdkadapter.DownstreamHost
@@ -32,6 +36,9 @@ type DatabaseServiceOptions struct {
 	Worker       schedulersdk.WorkerConfig
 	Applications []schedulersdk.ApplicationRef
 	Downstreams  func(context.Context, schedulersdk.ApplicationRef) (DownstreamHost, error)
+	// DefinitionStore may be supplied by an embedding service. Standalone SaaS
+	// opens the Metadata module over the same database when it is nil.
+	DefinitionStore metadatasdk.DefinitionStore
 }
 
 // DatabaseService is the production SaaS implementation behind the HTTP
@@ -88,6 +95,16 @@ func NewDatabaseService(options DatabaseServiceOptions) (*DatabaseService, error
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
+	if options.DefinitionStore == nil {
+		binding, err := metadatamodule.NewFactory().OpenModule(ctx, metadatasdk.ApplicationRef{InstallationID: "scheduler-saas"}, schedulerMetadataHost{
+			database: options.Database, dialect: dialect, driver: options.Driver, schema: options.Schema,
+		})
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("open Scheduler SaaS shared Definition store: %w", err)
+		}
+		options.DefinitionStore = binding.DefinitionStore()
+	}
 	service := &DatabaseService{options: options, dialect: dialect, ctx: ctx, cancel: cancel, applications: map[string]*databaseApplication{}, configured: map[string]bool{}}
 	for _, application := range options.Applications {
 		if err := application.Validate(); err != nil {
@@ -467,8 +484,32 @@ func (h *databaseApplicationHost) Dialect() modulehost.Dialect   { return h.dial
 func (h *databaseApplicationHost) Driver() string                { return h.service.Driver }
 func (h *databaseApplicationHost) Schema() string                { return h.service.Schema }
 func (h *databaseApplicationHost) WorkerID() string              { return h.service.WorkerID }
+func (h *databaseApplicationHost) DefinitionStore() metadatasdk.DefinitionStore {
+	return h.service.DefinitionStore
+}
 func (h *databaseApplicationHost) Snapshot(context.Context) (schedulersdk.DefinitionSnapshot, error) {
 	return schedulersdk.DefinitionSnapshot{}, fmt.Errorf("Scheduler SaaS definitions arrive through the fenced publication protocol")
 }
 
 var _ moduleassembly.SaaSHost = (*databaseApplicationHost)(nil)
+
+type schedulerMetadataHost struct {
+	database *sql.DB
+	dialect  modulehost.Dialect
+	driver   string
+	schema   string
+}
+
+func (h schedulerMetadataHost) Database() metadatamodulehost.Database { return h.database }
+func (h schedulerMetadataHost) Dialect() metadatamodulehost.Dialect   { return h.dialect }
+func (h schedulerMetadataHost) Migrations() metadatamodulehost.MigrationRegistrar {
+	return h
+}
+func (h schedulerMetadataHost) Driver() string { return h.driver }
+func (h schedulerMetadataHost) Schema() string { return h.schema }
+func (h schedulerMetadataHost) ApplyOwnedMigrations(ctx context.Context, owner string, migrations []metadatamodulehost.SchemaMigration) error {
+	if strings.TrimSpace(owner) != "metadata" {
+		return fmt.Errorf("Scheduler SaaS cannot install migration owner %q", owner)
+	}
+	return schedulermigration.EnsureSchema(ctx, h.database, h.dialect, "metadata", migrations)
+}

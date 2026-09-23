@@ -10,7 +10,6 @@ import (
 
 	sdk "github.com/domainry/domainry-scheduler-sdk"
 	transport "github.com/domainry/domainry-scheduler-sdk/saashost/httptransport"
-	capability "github.com/domainry/domainry-scheduler/capability"
 	server "github.com/domainry/domainry-scheduler/internal/transport/http/saas"
 )
 
@@ -30,15 +29,7 @@ func TestDeletionReceiptHTTPReadsDurableTombstoneAfterRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		binding, err := capability.Open(capability.Inputs{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		summary, err := binding.CapabilitySummary(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		client, err := transport.Open(t.Context(), transport.Config{Endpoint: "https://scheduler.test", Token: "receipt-secret", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: h}}, CapabilityContractSHA256: summary.Identity.ContractSHA256})
+		client, err := transport.Open(t.Context(), transport.Config{Endpoint: "https://scheduler.test", Token: "receipt-secret", Client: &http.Client{Transport: databaseHTTPRoundTripper{handler: h}}})
 		if err != nil {
 			t.Fatal(err)
 		}

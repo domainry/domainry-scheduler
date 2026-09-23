@@ -2,34 +2,43 @@ package scheduler
 
 import (
 	"context"
-	"database/sql"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/domainry/domainry-orm/query"
-	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	sharedoperation "github.com/domainry/domainry-foundation/operation"
+	"github.com/domainry/domainry-foundation/requestcontext"
 	schedulermodel "github.com/domainry/domainry-scheduler/internal/domain/scheduler/model"
 )
 
+const (
+	schedulerOperationPurpose = "scheduler_management"
+	schedulerOperationOwner   = "scheduler"
+	schedulerOperationKind    = "management_command"
+)
+
 type CommandReceiptStore struct {
-	db        modulehost.Database
-	dialect   modulehost.Dialect
-	runtimeID string
+	operations sharedoperation.Store
+	runtimeID  string
 }
 
-func NewCommandReceiptStore(db modulehost.Database, dialect modulehost.Dialect, runtimeID string) (*CommandReceiptStore, error) {
-	if db == nil {
-		return nil, fmt.Errorf("Scheduler command receipt database is required")
-	}
-	if dialect == nil {
-		return nil, fmt.Errorf("Scheduler command receipt dialect is required")
+type commandOperationResult struct {
+	HTTPStatus   int    `json:"http_status"`
+	ResponseJSON []byte `json:"response_json"`
+}
+
+func NewCommandReceiptStore(operations sharedoperation.Store, runtimeID string) (*CommandReceiptStore, error) {
+	if operations == nil {
+		return nil, fmt.Errorf("Scheduler shared Operation store is required")
 	}
 	runtimeID = strings.TrimSpace(runtimeID)
 	if runtimeID == "" {
 		return nil, fmt.Errorf("Scheduler command receipt runtime identity is required")
 	}
-	return &CommandReceiptStore{db: db, dialect: dialect, runtimeID: runtimeID}, nil
+	return &CommandReceiptStore{operations: operations, runtimeID: runtimeID}, nil
 }
 
 func (s *CommandReceiptStore) ClaimCommand(ctx context.Context, receipt schedulermodel.CommandReceipt) (schedulermodel.CommandReceipt, bool, error) {
@@ -40,70 +49,70 @@ func (s *CommandReceiptStore) ClaimCommand(ctx context.Context, receipt schedule
 	if receipt.IdempotencyKey == "" || receipt.ActionKey == "" || receipt.ResourceKey == "" || receipt.RequestHash == "" {
 		return schedulermodel.CommandReceipt{}, false, fmt.Errorf("Scheduler command receipt identity is incomplete")
 	}
-	now := formatTime(time.Now().UTC())
-	statement, args, err := query.NewInsertBuilder(s.dialect, "_scheduler_command_receipts").
-		Columns("runtime_id", "idempotency_key", "action_key", "resource_key", "request_hash", "status", "http_status", "response_json", "created_at", "updated_at").
-		Values(s.runtimeID, receipt.IdempotencyKey, receipt.ActionKey, receipt.ResourceKey, receipt.RequestHash, schedulermodel.CommandReceiptExecuting, int64(0), nil, now, now).
-		Build()
+	now := time.Now().UTC()
+	actor := strings.TrimSpace(requestcontext.ActorID(ctx))
+	if actor == "" {
+		actor = "scheduler:" + s.runtimeID
+	}
+	stored, claimed, err := s.operations.Claim(ctx, sharedoperation.Command{
+		ID: schedulerOperationID(s.runtimeID, receipt.IdempotencyKey),
+		Scope: sharedoperation.Scope{
+			SystemPurpose: schedulerOperationPurpose,
+			ResourceType:  "scheduler_command",
+			ResourceID:    s.runtimeID + ":" + receipt.ResourceKey,
+		},
+		Owner: schedulerOperationOwner, Kind: schedulerOperationKind, ActionKey: receipt.ActionKey,
+		IdempotencyKey: schedulerOperationKey(s.runtimeID, receipt.IdempotencyKey), RequestFingerprint: receipt.RequestHash,
+		RequestedBy: actor, Reason: "Scheduler management command " + receipt.ActionKey,
+		Reference: s.runtimeID, StatusURL: receipt.ResourceKey, CreatedAt: now,
+	})
 	if err != nil {
 		return schedulermodel.CommandReceipt{}, false, err
 	}
-	if _, err = s.db.ExecContext(ctx, statement, args...); err == nil {
-		receipt.Status = schedulermodel.CommandReceiptExecuting
-		return receipt, true, nil
-	} else if !isUnique(err) {
-		return schedulermodel.CommandReceipt{}, false, err
-	}
-	existing, err := s.commandReceipt(ctx, receipt.IdempotencyKey)
-	return existing, false, err
+	return schedulerCommandReceipt(stored, s.runtimeID), claimed, nil
 }
 
 func (s *CommandReceiptStore) CompleteCommand(ctx context.Context, idempotencyKey, requestHash string, httpStatus int, responseJSON []byte) error {
-	statement, args, err := query.NewUpdateBuilder(s.dialect, "_scheduler_command_receipts").
-		Set("status", schedulermodel.CommandReceiptCompleted).
-		Set("http_status", int64(httpStatus)).
-		Set("response_json", string(responseJSON)).
-		Set("updated_at", formatTime(time.Now().UTC())).
-		Where(query.And(
-			query.Equal("runtime_id", s.runtimeID),
-			query.Equal("idempotency_key", strings.TrimSpace(idempotencyKey)),
-			query.Equal("request_hash", strings.TrimSpace(requestHash)),
-			query.Equal("status", schedulermodel.CommandReceiptExecuting),
-		)).Build()
+	result, err := json.Marshal(commandOperationResult{HTTPStatus: httpStatus, ResponseJSON: append([]byte(nil), responseJSON...)})
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, statement, args...)
-	if err != nil {
-		return err
-	}
-	affected, _ := result.RowsAffected()
-	if affected != 1 {
-		return fmt.Errorf("Scheduler command receipt %q was not executing", idempotencyKey)
-	}
-	return nil
+	return s.operations.Complete(ctx, sharedoperation.Completion{
+		ID:    schedulerOperationID(s.runtimeID, idempotencyKey),
+		Scope: sharedoperation.Scope{SystemPurpose: schedulerOperationPurpose},
+		Owner: schedulerOperationOwner, Kind: schedulerOperationKind,
+		IdempotencyKey: schedulerOperationKey(s.runtimeID, idempotencyKey), RequestFingerprint: strings.TrimSpace(requestHash),
+		Result: result, CompletedAt: time.Now().UTC(),
+	})
 }
 
-func (s *CommandReceiptStore) commandReceipt(ctx context.Context, idempotencyKey string) (schedulermodel.CommandReceipt, error) {
-	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_command_receipts").
-		Columns("action_key", "resource_key", "request_hash", "status", "http_status", "response_json").
-		Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("idempotency_key", strings.TrimSpace(idempotencyKey)))).
-		Build()
-	if err != nil {
-		return schedulermodel.CommandReceipt{}, err
+func schedulerCommandReceipt(stored sharedoperation.Receipt, runtimeID string) schedulermodel.CommandReceipt {
+	receipt := schedulermodel.CommandReceipt{
+		IdempotencyKey: strings.TrimPrefix(stored.Command.IdempotencyKey, runtimeID+":"),
+		ActionKey:      stored.Command.ActionKey, ResourceKey: stored.Command.StatusURL,
+		RequestHash: stored.Command.RequestFingerprint,
 	}
-	var receipt schedulermodel.CommandReceipt
-	var response sql.NullString
-	var status int64
-	if err := s.db.QueryRowContext(ctx, statement, args...).Scan(&receipt.ActionKey, &receipt.ResourceKey, &receipt.RequestHash, &receipt.Status, &status, &response); err != nil {
-		return schedulermodel.CommandReceipt{}, err
+	switch stored.Status {
+	case sharedoperation.StatusStarted:
+		receipt.Status = schedulermodel.CommandReceiptExecuting
+	case sharedoperation.StatusSucceeded:
+		receipt.Status = schedulermodel.CommandReceiptCompleted
+		var result commandOperationResult
+		if json.Unmarshal(stored.Result, &result) == nil {
+			receipt.HTTPStatus = result.HTTPStatus
+			receipt.ResponseJSON = append([]byte(nil), result.ResponseJSON...)
+		}
 	}
-	receipt.IdempotencyKey = strings.TrimSpace(idempotencyKey)
-	receipt.HTTPStatus = int(status)
-	if response.Valid {
-		receipt.ResponseJSON = []byte(response.String)
-	}
-	return receipt, nil
+	return receipt
+}
+
+func schedulerOperationKey(runtimeID, idempotencyKey string) string {
+	return strings.TrimSpace(runtimeID) + ":" + strings.TrimSpace(idempotencyKey)
+}
+
+func schedulerOperationID(runtimeID, idempotencyKey string) string {
+	digest := sha256.Sum256([]byte(schedulerOperationKey(runtimeID, idempotencyKey)))
+	return "scheduler_operation:" + hex.EncodeToString(digest[:16])
 }
 
 var _ schedulermodel.CommandReceiptStore = (*CommandReceiptStore)(nil)

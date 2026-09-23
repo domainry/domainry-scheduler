@@ -38,11 +38,10 @@ type binding interface {
 }
 
 type adapter struct {
-	binding    binding
-	receipts   schedulermodel.CommandReceiptStore
-	handler    http.Handler
-	routes     []modulehttp.Route
-	operations map[string]map[string]any
+	binding  binding
+	receipts schedulermodel.CommandReceiptStore
+	handler  http.Handler
+	routes   []modulehttp.Route
 }
 
 func (*adapter) ContractVersion() string { return modulehttp.ContractVersion }
@@ -52,10 +51,6 @@ func (a *adapter) Handler() http.Handler { return a.handler }
 func (a *adapter) Routes() []modulehttp.Route {
 	return append([]modulehttp.Route(nil), a.routes...)
 }
-func (a *adapter) OpenAPIOperations() map[string]map[string]any {
-	return cloneOperations(a.operations)
-}
-
 func NewAdapter(owner binding, receipts schedulermodel.CommandReceiptStore) (modulehttp.Adapter, error) {
 	if owner == nil || owner.DefinitionRepository() == nil {
 		return nil, errors.New("Scheduler HTTP binding is unavailable")
@@ -69,7 +64,7 @@ func NewAdapter(owner binding, receipts schedulermodel.CommandReceiptStore) (mod
 	if err != nil {
 		return nil, err
 	}
-	a := &adapter{binding: owner, receipts: receipts, routes: make([]modulehttp.Route, 0, len(contract.Routes)), operations: cloneOperations(contract.OpenAPI)}
+	a := &adapter{binding: owner, receipts: receipts, routes: make([]modulehttp.Route, 0, len(contract.Routes))}
 	handlers := a.handlers()
 	mux := http.NewServeMux()
 	for _, declared := range contract.Routes {
@@ -81,9 +76,6 @@ func NewAdapter(owner binding, receipts schedulermodel.CommandReceiptStore) (mod
 		if !found {
 			return nil, fmt.Errorf("Scheduler Action %q has no HTTP handler", route.Action.Key)
 		}
-		if _, found := a.operations[route.Pattern()]; !found {
-			return nil, fmt.Errorf("Scheduler Action %q has no OpenAPI operation", route.Action.Key)
-		}
 		a.routes = append(a.routes, route)
 		if schedulerCommandActions[route.Action.Key] {
 			handler = a.withCommandReceipt(route.Action.Key, handler)
@@ -91,7 +83,7 @@ func NewAdapter(owner binding, receipts schedulermodel.CommandReceiptStore) (mod
 		mux.HandleFunc(route.Pattern(), handler)
 		delete(handlers, route.Action.Key)
 	}
-	if len(handlers) != 0 || len(a.operations) != len(a.routes) {
+	if len(handlers) != 0 {
 		keys := make([]string, 0, len(handlers))
 		for key := range handlers {
 			keys = append(keys, key)
@@ -630,17 +622,4 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func cloneOperations(source map[string]map[string]any) map[string]map[string]any {
-	result := make(map[string]map[string]any, len(source))
-	for pattern, operation := range source {
-		clone := make(map[string]any, len(operation))
-		for key, value := range operation {
-			clone[key] = value
-		}
-		result[pattern] = clone
-	}
-	return result
-}
-
 var _ modulehttp.Adapter = (*adapter)(nil)
-var _ modulehttp.OpenAPIProvider = (*adapter)(nil)

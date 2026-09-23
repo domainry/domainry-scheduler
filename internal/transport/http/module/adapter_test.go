@@ -114,10 +114,6 @@ func TestAdapterPublishesAndImplementsEverySchedulerAction(t *testing.T) {
 	if len(routes) != 13 {
 		t.Fatalf("routes=%d", len(routes))
 	}
-	openAPI, ok := value.(modulehttp.OpenAPIProvider)
-	if !ok || len(openAPI.OpenAPIOperations()) != len(routes) {
-		t.Fatalf("OpenAPI routes=%d operations=%d", len(routes), len(openAPI.OpenAPIOperations()))
-	}
 	actions, err := schedulersdk.SchedulerAuthorizationActions()
 	if err != nil {
 		t.Fatal(err)

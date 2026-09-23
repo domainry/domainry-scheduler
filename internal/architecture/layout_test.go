@@ -14,7 +14,7 @@ func TestRepositoryRootContainsOnlyReviewedPackages(t *testing.T) {
 		t.Fatal("resolve architecture test path")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	allowed := map[string]bool{"admin": true, "capability": true, "cmd": true, "internal": true, "module": true, "remote": true}
+	allowed := map[string]bool{"admin": true, "cmd": true, "docs": true, "internal": true, "module": true, "remote": true}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)

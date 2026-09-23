@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/domainry/domainry-foundation/modulecapability"
-	"github.com/domainry/domainry-foundation/modulecapability/contracttest"
 	"github.com/domainry/domainry-foundation/modulehttp"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
@@ -34,7 +32,6 @@ func (hostStub) Dispatcher() modulehost.Dispatcher                  { return dis
 func (hostStub) HTTPConnections() modulehost.HTTPConnectionProvider { return nil }
 
 type transportStub struct {
-	modulecapability.Binding
 	snapshot schedulersdk.DefinitionSnapshot
 	session  schedulersdk.DefinitionPublisherSession
 	closes   int
@@ -130,11 +127,7 @@ func (t *transportStub) DeleteScheduledPlan(_ context.Context, _ schedulersdk.Ap
 
 func TestSaaSBindingPublishesRuntimeDefinitionSnapshot(t *testing.T) {
 	definition := schedulersdk.Definition{Key: "daily", Status: "enabled", Revision: "v1", Schedule: schedulersdk.Schedule{Type: "interval", IntervalSeconds: 60}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "workflow", Operation: "scheduled:daily"}}
-	capability, err := contracttest.NewFixtureBinding("scheduler")
-	if err != nil {
-		t.Fatal(err)
-	}
-	transport := &transportStub{Binding: capability}
+	transport := &transportStub{}
 	binding, err := NewFactory(transport).OpenSaaS(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, hostStub{definitions: definitionProvider{snapshot: schedulersdk.DefinitionSnapshot{Revision: 11, Definitions: []schedulersdk.Definition{definition}}}})
 	if err != nil {
 		t.Fatal(err)
@@ -164,26 +157,17 @@ func TestSaaSBindingPublishesRuntimeDefinitionSnapshot(t *testing.T) {
 }
 
 func TestSaaSBindingRejectsInvalidPublisherSession(t *testing.T) {
-	capability, err := contracttest.NewFixtureBinding("scheduler")
-	if err != nil {
-		t.Fatal(err)
-	}
 	transport := &transportStub{
-		Binding: capability,
 		session: schedulersdk.DefinitionPublisherSession{ContractVersion: schedulersdk.DefinitionPublicationContractVersion, Generation: 1},
 	}
-	_, err = NewFactory(transport).OpenSaaS(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, hostStub{definitions: definitionProvider{}})
+	_, err := NewFactory(transport).OpenSaaS(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, hostStub{definitions: definitionProvider{}})
 	if err == nil {
 		t.Fatal("Scheduler remote accepted an invalid publisher session")
 	}
 }
 
 func TestSaaSBindingStartTracksEveryCallerContextAndClose(t *testing.T) {
-	capability, err := contracttest.NewFixtureBinding("scheduler")
-	if err != nil {
-		t.Fatal(err)
-	}
-	transport := &transportStub{Binding: capability}
+	transport := &transportStub{}
 	binding, err := NewFactory(transport).OpenSaaS(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}, hostStub{definitions: definitionProvider{}})
 	if err != nil {
 		t.Fatal(err)

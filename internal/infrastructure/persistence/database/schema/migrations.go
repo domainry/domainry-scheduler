@@ -8,7 +8,7 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
 
-const SchemaVersion uint = 8
+const SchemaVersion uint = 2
 
 type Migration = ormmigration.Migration
 
@@ -19,13 +19,21 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 		primary []string
 		unique  [][]string
 	}{
-		{name: "_scheduler_definition_states", columns: []ormschema.ColumnDefinition{
-			required("runtime_id", ormschema.TextKey(191)), required("definition_key", ormschema.TextKey(191)),
-			required("revision", ormschema.TextKey(191)), required("enabled", ormschema.Boolean()),
-			required("definition_json", ormschema.JSON()), required("next_run_at", ormschema.TextKey(40)),
-			optional("last_run_at", ormschema.TextKey(40)), optional("last_run_status", ormschema.TextKey(32)),
-			required("snapshot_revision", ormschema.BigInt()), required("updated_at", ormschema.TextKey(40)),
-		}, primary: []string{"runtime_id", "definition_key"}},
+		{name: "_scheduler_schedules", columns: []ormschema.ColumnDefinition{
+			required("runtime_id", ormschema.TextKey(191)), required("schedule_id", ormschema.TextKey(191)),
+			required("kind", ormschema.TextKey(32)), required("source_kind", ormschema.TextKey(32)),
+			required("source_id", ormschema.TextKey(191)), optional("definition_revision", ormschema.TextKey(191)),
+			required("enabled", ormschema.Boolean()), optional("definition_json", ormschema.JSON()),
+			optional("next_run_at", ormschema.TextKey(40)), optional("last_run_at", ormschema.TextKey(40)),
+			optional("last_run_status", ormschema.TextKey(32)), required("snapshot_revision", ormschema.BigInt()),
+			optional("publication_generation", ormschema.BigInt()), optional("publication_session_sha256", ormschema.TextKey(64)),
+			optional("publication_content_sha256", ormschema.TextKey(64)),
+			optional("client_id", ormschema.TextKey(191)), optional("request_sha256", ormschema.TextKey(64)),
+			optional("workspace_id", ormschema.TextKey(191)), optional("user_id", ormschema.TextKey(191)),
+			optional("product_key", ormschema.TextKey(191)), optional("status", ormschema.TextKey(32)),
+			optional("plan_revision", ormschema.BigInt()), optional("plan_json", ormschema.JSON()),
+			required("created_at", ormschema.TextKey(40)), required("updated_at", ormschema.TextKey(40)),
+		}, primary: []string{"runtime_id", "schedule_id"}},
 		{name: "_scheduler_runs", columns: []ormschema.ColumnDefinition{
 			required("runtime_id", ormschema.TextKey(191)), required("run_id", ormschema.TextKey(191)),
 			required("definition_key", ormschema.TextKey(191)), required("definition_revision", ormschema.TextKey(191)),
@@ -35,16 +43,11 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 			optional("lease_owner", ormschema.TextKey(191)), optional("lease_expires_at", ormschema.TextKey(40)),
 			required("fencing_token", ormschema.BigInt()), optional("next_retry_at", ormschema.TextKey(40)),
 			optional("receipt_json", ormschema.JSON()), optional("last_error", ormschema.LongText()),
+			optional("failed_at", ormschema.TextKey(40)), optional("dead_letter_resolved_at", ormschema.TextKey(40)),
+			optional("dead_letter_resolved_by", ormschema.TextKey(191)), optional("dead_letter_resolution_operation_id", ormschema.TextKey(191)),
+			optional("dead_letter_resolution_reason", ormschema.LongText()),
 			required("created_at", ormschema.TextKey(40)), required("updated_at", ormschema.TextKey(40)),
 		}, primary: []string{"runtime_id", "run_id"}, unique: [][]string{{"runtime_id", "definition_key", "scheduled_for"}}},
-		{name: "_scheduler_run_events", columns: []ormschema.ColumnDefinition{
-			required("runtime_id", ormschema.TextKey(191)), required("event_id", ormschema.TextKey(191)), required("run_id", ormschema.TextKey(191)),
-			required("event_type", ormschema.TextKey(64)), optional("message", ormschema.LongText()), optional("metadata_json", ormschema.JSON()), required("created_at", ormschema.TextKey(40)),
-		}, primary: []string{"runtime_id", "event_id"}},
-		{name: "_scheduler_dead_letters", columns: []ormschema.ColumnDefinition{
-			required("runtime_id", ormschema.TextKey(191)), required("run_id", ormschema.TextKey(191)), required("definition_key", ormschema.TextKey(191)),
-			required("reason", ormschema.LongText()), required("failed_at", ormschema.TextKey(40)), optional("resolved_at", ormschema.TextKey(40)),
-		}, primary: []string{"runtime_id", "run_id"}},
 	}
 	statements := make([]string, 0, len(definitions))
 	for _, definition := range definitions {
@@ -58,132 +61,28 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 		}
 		statements = append(statements, statement)
 	}
-	definitionStatement, _, err := definitionTable(r).Build()
+	workerScopeStatement, _, err := ormschema.NewTable(r, "_worker_scopes").IfNotExists().Columns(
+		required("id", ormschema.TextKey(191)),
+		required("owner", ormschema.TextKey(191)),
+		required("scope_key", ormschema.TextKey(191)),
+		ormschema.Column("cursor", ormschema.TextKey(191)).NotNull().DefaultValue(""),
+		ormschema.Column("checkpoint", ormschema.BigInt()).NotNull().DefaultValue(0),
+		ormschema.Column("capacity", ormschema.BigInt()).NotNull().DefaultValue(0),
+		ormschema.Column("lease_owner", ormschema.TextKey(191)).NotNull().DefaultValue(""),
+		ormschema.Column("lease_expires_at", ormschema.TextKey(40)).NotNull().DefaultValue(""),
+		ormschema.Column("fencing_token", ormschema.BigInt()).NotNull().DefaultValue(0),
+		ormschema.Column("last_started_at", ormschema.TextKey(40)).NotNull().DefaultValue(""),
+		ormschema.Column("last_completed_at", ormschema.TextKey(40)).NotNull().DefaultValue(""),
+		ormschema.Column("last_error", ormschema.Text()).NotNull().DefaultValue(""),
+		ormschema.Column("updated_at", ormschema.TextKey(40)).NotNull().DefaultValue(""),
+	).PrimaryKey("id").Unique("owner", "scope_key").Build()
 	if err != nil {
-		return nil, fmt.Errorf("build Scheduler definition table: %w", err)
-	}
-	commandReceiptStatement, _, err := commandReceiptTable(r).Build()
-	if err != nil {
-		return nil, fmt.Errorf("build Scheduler command receipt table: %w", err)
-	}
-	definitionSnapshotStatement, _, err := definitionSnapshotTable(r).Build()
-	if err != nil {
-		return nil, fmt.Errorf("build Scheduler definition snapshot table: %w", err)
-	}
-	definitionPublicationStatement, _, err := definitionPublicationTable(r).Build()
-	if err != nil {
-		return nil, fmt.Errorf("build Scheduler definition publication table: %w", err)
-	}
-	scheduledPlanStatement, _, err := scheduledPlanTable(r).Build()
-	if err != nil {
-		return nil, fmt.Errorf("build Scheduler plan table: %w", err)
-	}
-	definitionStateSource, _, err := ormschema.NewAddColumn(r, "_scheduler_definition_states",
-		ormschema.Column("source_kind", ormschema.TextKey(32)).NotNull().DefaultValue("runtime_definition"),
-	).Build()
-	if err != nil {
-		return nil, fmt.Errorf("build Scheduler definition state source column: %w", err)
-	}
-	capacityGuardStatement, _, err := ormschema.NewTable(r, "_scheduler_capacity_guards").IfNotExists().Columns(
-		required("runtime_id", ormschema.TextKey(191)), required("revision", ormschema.BigInt()),
-	).PrimaryKey("runtime_id").Build()
-	if err != nil {
-		return nil, fmt.Errorf("build Scheduler capacity guard table: %w", err)
+		return nil, fmt.Errorf("build shared worker scope table: %w", err)
 	}
 	return []modulehost.SchemaMigration{
 		{Version: 1, Name: "scheduler_foundation", Statements: statements},
-		{Version: 2, Name: "scheduler_definition_ownership", Statements: []string{definitionStatement}},
-		{Version: 3, Name: "scheduler_command_idempotency", Statements: []string{commandReceiptStatement}},
-		{Version: 4, Name: "scheduler_definition_snapshot_state", Statements: []string{definitionSnapshotStatement}},
-		{Version: 5, Name: "scheduler_definition_publication_fencing", Statements: []string{definitionPublicationStatement}},
-		{Version: 6, Name: "scheduler_owned_plans", Statements: []string{scheduledPlanStatement}},
-		{Version: 7, Name: "scheduler_definition_state_sources", Statements: []string{definitionStateSource}},
-		{Version: 8, Name: "scheduler_trigger_capacity", Statements: []string{capacityGuardStatement}},
+		{Version: 2, Name: "scheduler_trigger_capacity", Statements: []string{workerScopeStatement}},
 	}, nil
-}
-
-// definitionTable is the canonical Scheduler-authored definition projection.
-// The host supplies the database, dialect, lock, transaction boundary and
-// migration ledger, but must not declare this module-owned table itself.
-func definitionTable(r modulehost.Dialect) *ormschema.TableBuilder {
-	return ormschema.NewTable(r, "_scheduler_definitions").IfNotExists().Columns(
-		required("id", ormschema.TextKey(255)),
-		required("resource_key", ormschema.TextKey(255)),
-		required("object_key", ormschema.TextKey(255)),
-		required("name", ormschema.Text()),
-		required("payload_json", ormschema.LongText()),
-		required("schema_version", ormschema.TextKey(255)),
-		required("schema_hash", ormschema.TextKey(255)),
-		required("source_kind", ormschema.TextKey(255)),
-		required("source_id", ormschema.TextKey(255)),
-		optional("disabled_at", ormschema.TextKey(255)),
-		required("created_at", ormschema.TextKey(255)),
-		required("updated_at", ormschema.TextKey(255)),
-	).PrimaryKey("id").Unique("resource_key")
-}
-
-func commandReceiptTable(r modulehost.Dialect) *ormschema.TableBuilder {
-	return ormschema.NewTable(r, "_scheduler_command_receipts").IfNotExists().Columns(
-		required("runtime_id", ormschema.TextKey(191)),
-		required("idempotency_key", ormschema.TextKey(191)),
-		required("action_key", ormschema.TextKey(191)),
-		required("resource_key", ormschema.TextKey(255)),
-		required("request_hash", ormschema.TextKey(64)),
-		required("status", ormschema.TextKey(32)),
-		required("http_status", ormschema.BigInt()),
-		optional("response_json", ormschema.LongText()),
-		required("created_at", ormschema.TextKey(40)),
-		required("updated_at", ormschema.TextKey(40)),
-	).PrimaryKey("runtime_id", "idempotency_key")
-}
-
-func definitionSnapshotTable(r modulehost.Dialect) *ormschema.TableBuilder {
-	return ormschema.NewTable(r, "_scheduler_definition_snapshots").IfNotExists().Columns(
-		required("source_kind", ormschema.TextKey(191)),
-		required("source_id", ormschema.TextKey(191)),
-		required("revision", ormschema.BigInt()),
-		required("schema_version", ormschema.TextKey(255)),
-		required("schema_hash", ormschema.TextKey(64)),
-		required("updated_at", ormschema.TextKey(40)),
-	).PrimaryKey("source_kind", "source_id")
-}
-
-func definitionPublicationTable(r modulehost.Dialect) *ormschema.TableBuilder {
-	return ormschema.NewTable(r, "_scheduler_definition_publications").IfNotExists().Columns(
-		required("source_kind", ormschema.TextKey(191)),
-		required("source_id", ormschema.TextKey(191)),
-		required("active_generation", ormschema.BigInt()),
-		required("active_session_sha256", ormschema.TextKey(64)),
-		optional("cursor_generation", ormschema.BigInt()),
-		optional("cursor_session_sha256", ormschema.TextKey(64)),
-		optional("cursor_revision", ormschema.BigInt()),
-		optional("cursor_content_sha256", ormschema.TextKey(64)),
-		required("updated_at", ormschema.TextKey(40)),
-	).PrimaryKey("source_kind", "source_id")
-}
-
-func scheduledPlanTable(r modulehost.Dialect) *ormschema.TableBuilder {
-	return ormschema.NewTable(r, "_scheduler_plans").IfNotExists().Columns(
-		required("runtime_id", ormschema.TextKey(191)),
-		required("plan_id", ormschema.TextKey(191)),
-		required("client_id", ormschema.TextKey(191)),
-		required("request_sha256", ormschema.TextKey(64)),
-		required("workspace_id", ormschema.TextKey(191)),
-		required("user_id", ormschema.TextKey(191)),
-		required("product_key", ormschema.TextKey(191)),
-		required("name", ormschema.Text()),
-		required("timezone", ormschema.TextKey(128)),
-		required("trigger_json", ormschema.JSON()),
-		required("input_json", ormschema.JSON()),
-		required("allowed_actions_json", ormschema.JSON()),
-		required("target_json", ormschema.JSON()),
-		optional("source_conversation_id", ormschema.TextKey(191)),
-		optional("source_run_id", ormschema.TextKey(191)),
-		required("status", ormschema.TextKey(32)),
-		required("revision", ormschema.BigInt()),
-		required("created_at", ormschema.TextKey(40)),
-		required("updated_at", ormschema.TextKey(40)),
-	).PrimaryKey("runtime_id", "plan_id")
 }
 
 func required(name string, kind ormschema.ColumnType) ormschema.ColumnDefinition {

@@ -8,31 +8,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/domainry/domainry-foundation/requestcontext"
+	metadatasdk "github.com/domainry/domainry-metadata-sdk"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	schedulermodel "github.com/domainry/domainry-scheduler/internal/domain/scheduler/model"
+	definitionstore "github.com/domainry/domainry-scheduler/internal/testsupport/definitionstore"
+	operationstore "github.com/domainry/domainry-scheduler/internal/testsupport/operationstore"
 	_ "modernc.org/sqlite"
 )
 
-func TestCommandReceiptClaimIsDurableAndRuntimeScoped(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:scheduler-command-receipt?mode=memory&cache=shared")
+func TestCommandReceiptUsesSharedOperationStoreAndRuntimeScope(t *testing.T) {
+	shared := operationstore.New()
+	first, err := NewCommandReceiptStore(shared, "runtime-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if err := EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
-		t.Fatal(err)
-	}
-	dialect, err := Renderer("sqlite", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := NewCommandReceiptStore(db, dialect, "runtime-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := NewCommandReceiptStore(db, dialect, "runtime-a")
+	second, err := NewCommandReceiptStore(shared, "runtime-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +46,7 @@ func TestCommandReceiptClaimIsDurableAndRuntimeScoped(t *testing.T) {
 	if err != nil || claimed || receipt.Status != schedulermodel.CommandReceiptCompleted || receipt.HTTPStatus != 200 || string(receipt.ResponseJSON) != string(response) {
 		t.Fatalf("replay=%+v claimed=%t err=%v", receipt, claimed, err)
 	}
-	otherRuntime, err := NewCommandReceiptStore(db, dialect, "runtime-b")
+	otherRuntime, err := NewCommandReceiptStore(shared, "runtime-b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,11 +69,12 @@ func TestDefinitionStoreScopesSameAndDifferentKeysByRuntimeAcrossReopen(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeA, err := NewDefinitionStore(db, dialect, "runtime-a", schedulersdk.DeploymentModeModule)
+	shared := definitionstore.New()
+	runtimeA, err := NewDefinitionStore(db, dialect, shared, "runtime-a", schedulersdk.DeploymentModeModule)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeB, err := NewDefinitionStore(db, dialect, "runtime-b", schedulersdk.DeploymentModeModule)
+	runtimeB, err := NewDefinitionStore(db, dialect, shared, "runtime-b", schedulersdk.DeploymentModeModule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,11 +95,11 @@ func TestDefinitionStoreScopesSameAndDifferentKeysByRuntimeAcrossReopen(t *testi
 	assertDefinitionSnapshot(t, runtimeA, "runtime-a", map[string]string{"shared": "run-a", "a-only": "only-a"})
 	assertDefinitionSnapshot(t, runtimeB, "runtime-b", map[string]string{"shared": "run-b", "b-only": "only-b"})
 
-	reopenedA, err := NewDefinitionStore(db, dialect, "runtime-a", schedulersdk.DeploymentModeModule)
+	reopenedA, err := NewDefinitionStore(db, dialect, shared, "runtime-a", schedulersdk.DeploymentModeModule)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reopenedB, err := NewDefinitionStore(db, dialect, "runtime-b", schedulersdk.DeploymentModeModule)
+	reopenedB, err := NewDefinitionStore(db, dialect, shared, "runtime-b", schedulersdk.DeploymentModeModule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,12 +112,12 @@ func TestDefinitionStoreScopesSameAndDifferentKeysByRuntimeAcrossReopen(t *testi
 	assertDefinitionSnapshot(t, reopenedA, "runtime-a", map[string]string{"shared": "run-a", "a-only": "only-a"})
 	assertDefinitionSnapshot(t, reopenedB, "runtime-b", map[string]string{"shared": "run-b", "b-only": "only-b"})
 
-	var activeRows, storageKeys int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*), COUNT(DISTINCT resource_key) FROM _scheduler_definitions WHERE disabled_at IS NULL`).Scan(&activeRows, &storageKeys); err != nil {
+	states, err := shared.List(t.Context(), metadatasdk.DefinitionQuery{Owner: metadatasdk.DefinitionOwnerScheduler, ResourceType: "scheduler"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if activeRows != 4 || storageKeys != 4 {
-		t.Fatalf("active definition rows=%d distinct storage keys=%d", activeRows, storageKeys)
+	if len(states) != 2 {
+		t.Fatalf("shared Scheduler state definitions=%d want=2", len(states))
 	}
 }
 
@@ -140,7 +134,8 @@ func TestDefinitionStoreAcceptsChangedSnapshotFromNewProcessLocalRevisionEpoch(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewDefinitionStore(db, dialect, "runtime-a", schedulersdk.DeploymentModeModule)
+	shared := definitionstore.New()
+	store, err := NewDefinitionStore(db, dialect, shared, "runtime-a", schedulersdk.DeploymentModeModule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +143,7 @@ func TestDefinitionStoreAcceptsChangedSnapshotFromNewProcessLocalRevisionEpoch(t
 	if err := store.SyncDefinitions(t.Context(), schedulerpersistence.DefinitionSnapshot{Revision: 7, SchemaVersion: "7", SourceKind: "runtime_host", SourceID: "runtime-a", Definitions: []schedulersdk.Definition{current}}); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := NewDefinitionStore(db, dialect, "runtime-a", schedulersdk.DeploymentModeModule)
+	reopened, err := NewDefinitionStore(db, dialect, shared, "runtime-a", schedulersdk.DeploymentModeModule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +170,8 @@ func TestDefinitionStoreEnforcesDeploymentPublicationBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	moduleStore, err := NewDefinitionStore(db, dialect, "runtime-module", schedulersdk.DeploymentModeModule)
+	shared := definitionstore.New()
+	moduleStore, err := NewDefinitionStore(db, dialect, shared, "runtime-module", schedulersdk.DeploymentModeModule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +184,7 @@ func TestDefinitionStoreEnforcesDeploymentPublicationBoundary(t *testing.T) {
 	}); err == nil {
 		t.Fatal("Module store accepted a SaaS publisher fence")
 	}
-	saasStore, err := NewDefinitionStore(db, dialect, "runtime-saas", schedulersdk.DeploymentModeSaaS)
+	saasStore, err := NewDefinitionStore(db, dialect, shared, "runtime-saas", schedulersdk.DeploymentModeSaaS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,18 +192,6 @@ func TestDefinitionStoreEnforcesDeploymentPublicationBoundary(t *testing.T) {
 		Revision: 1, SchemaVersion: "1", SourceKind: "runtime_host", SourceID: "runtime-saas", Definitions: []schedulersdk.Definition{testDefinition("daily", "saas", `{}`)},
 	}); !errors.Is(err, schedulersdk.ErrDefinitionPublicationRequired) {
 		t.Fatalf("SaaS nil fence err=%v", err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO _scheduler_definition_publications (
-		source_kind, source_id, active_generation, active_session_sha256, updated_at
-	) VALUES (?, ?, ?, ?, ?)`, "runtime_host", "runtime-limit", int64(1<<53-1), strings.Repeat("b", 64), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Fatal(err)
-	}
-	limitStore, err := NewDefinitionStore(db, dialect, "runtime-limit", schedulersdk.DeploymentModeSaaS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := limitStore.BeginDefinitionPublisherSession(t.Context()); err == nil || !strings.Contains(err.Error(), "generation exhausted") {
-		t.Fatalf("generation limit err=%v", err)
 	}
 }
 
@@ -390,22 +374,21 @@ func TestStandaloneSchemaMigrationIsIdempotent(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM "_schema_migrations" WHERE "dirty" = FALSE`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 8 {
+	if count != 2 {
 		t.Fatalf("applied migrations=%d", count)
 	}
-	var definitions int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_scheduler_definitions'`).Scan(&definitions); err != nil {
+	var schedules int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_scheduler_schedules'`).Scan(&schedules); err != nil {
 		t.Fatal(err)
 	}
-	if definitions != 1 {
-		t.Fatalf("scheduler definition tables=%d", definitions)
+	if schedules != 1 {
+		t.Fatalf("scheduler schedule tables=%d", schedules)
 	}
-	var plans int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_scheduler_plans'`).Scan(&plans); err != nil {
-		t.Fatal(err)
-	}
-	if plans != 1 {
-		t.Fatalf("scheduler plan tables=%d", plans)
+	for _, retired := range []string{"_scheduler_definition_states", "_scheduler_plans", "_scheduler_command_receipts", "_scheduler_definitions", "_scheduler_definition_snapshots", "_scheduler_definition_publications"} {
+		var found int
+		if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, retired).Scan(&found); err != nil || found != 0 {
+			t.Fatalf("retired table %s found=%d err=%v", retired, found, err)
+		}
 	}
 }
 
@@ -442,15 +425,12 @@ func TestFailureAtMaximumAttemptAtomicallyCreatesDeadLetter(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT status, last_error FROM _scheduler_runs WHERE runtime_id = ? AND run_id = ?`, "runtime-a", run.Trigger.RunID).Scan(&status, &reason); err != nil {
 		t.Fatal(err)
 	}
-	var deadLetters, events int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_dead_letters WHERE runtime_id = ? AND run_id = ?`, "runtime-a", run.Trigger.RunID).Scan(&deadLetters); err != nil {
+	var deadLetters int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_runs WHERE runtime_id = ? AND run_id = ? AND failed_at IS NOT NULL`, "runtime-a", run.Trigger.RunID).Scan(&deadLetters); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_run_events WHERE runtime_id = ? AND run_id = ? AND event_type = 'dead_lettered'`, "runtime-a", run.Trigger.RunID).Scan(&events); err != nil {
-		t.Fatal(err)
-	}
-	if status != "dead_letter" || reason == "" || deadLetters != 1 || events != 1 {
-		t.Fatalf("status=%q reason=%q dead_letters=%d events=%d", status, reason, deadLetters, events)
+	if status != "dead_letter" || reason == "" || deadLetters != 1 {
+		t.Fatalf("status=%q reason=%q dead_letters=%d", status, reason, deadLetters)
 	}
 	listed, err := store.DeadLetters(t.Context(), 10)
 	if err != nil {
@@ -458,6 +438,15 @@ func TestFailureAtMaximumAttemptAtomicallyCreatesDeadLetter(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].RunID != run.Trigger.RunID || listed[0].DefinitionKey != definition.Key || listed[0].Status != "open" || listed[0].Reason == "" {
 		t.Fatalf("listed dead letters=%+v", listed)
+	}
+	resolveContext := requestcontext.WithActorID(t.Context(), "operator-a")
+	resolveContext = requestcontext.WithOwnerExecutionID(resolveContext, "operation-a")
+	resolved, err := store.ResolveDeadLetter(resolveContext, run.Trigger.RunID, "reviewed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Status != "resolved" || resolved.ResolvedBy != "operator-a" || resolved.ResolutionOperationID != "operation-a" || resolved.ResolutionReason != "reviewed" || resolved.ResolvedAt.IsZero() {
+		t.Fatalf("resolved dead letter=%+v", resolved)
 	}
 }
 
@@ -487,7 +476,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cursor string
-	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_definition_states WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_schedules WHERE runtime_id = ? AND schedule_id = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(first) {
@@ -497,7 +486,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := store.Reschedule(t.Context(), definition.Key, manual, "operator correction"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_definition_states WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_schedules WHERE runtime_id = ? AND schedule_id = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(manual) {
@@ -508,7 +497,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := store.Reconcile(t.Context(), definition, changed); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_definition_states WHERE runtime_id = ? AND definition_key = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_schedules WHERE runtime_id = ? AND schedule_id = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(changed) {

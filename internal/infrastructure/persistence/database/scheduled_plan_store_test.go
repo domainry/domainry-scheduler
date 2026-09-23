@@ -75,7 +75,7 @@ func TestScheduledPlanStorePersistsOwnerScopeAndIdempotencyAcrossReopen(t *testi
 		t.Fatalf("cross-user lookup err=%v", err)
 	}
 	var rows int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_plans WHERE runtime_id = ? AND plan_id = ?`, "runtime-a", record.Plan.ID).Scan(&rows); err != nil || rows != 1 {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_schedules WHERE runtime_id = ? AND source_id = ? AND kind = 'scheduled_plan'`, "runtime-a", record.Plan.ID).Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("rows=%d err=%v", rows, err)
 	}
 }
@@ -115,7 +115,7 @@ func TestScheduledPlanStoreConcurrentExactCreateWritesOneRecord(t *testing.T) {
 		}
 	}
 	var rows int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_plans`).Scan(&rows); err != nil || rows != 1 {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_schedules WHERE kind = 'scheduled_plan'`).Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("rows=%d err=%v", rows, err)
 	}
 }

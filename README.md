@@ -88,8 +88,10 @@ go run ./cmd/scheduler-server
 The SaaS assembly can resolve a different callback endpoint and credential for
 each Runtime. Scheduler tables,
 leases, run evidence and the standalone `_schema_migrations` ledger stay in the
-Scheduler database. Module mode uses the Runtime pool and shared migration
-ledger, but the same tables and repository remain Scheduler-owned.
+Scheduler database. Scheduler and its embedded Metadata module use
+owner-qualified rows in that one ledger; there is no Metadata-private ledger.
+Module mode uses the Runtime pool and shared migration ledger, but the same
+tables and repository remain Scheduler-owned.
 
 The HTTP protocol is an internal transport. Consumers use the published SDK
 transport rather than importing the server implementation.
@@ -105,7 +107,7 @@ Definitions are configuration. A successful downstream call must return a durabl
 
 Leased and retrying runs form the Scheduler-owned trigger backlog. New claims
 serialize a database count with insertion through the Runtime-scoped
-`_scheduler_capacity_guards` row, so multiple workers cannot each admit past
+the owner=`scheduler_trigger_capacity` row in `_worker_scopes`, so multiple workers cannot each admit past
 the configured limit. Existing windows and expired leases remain idempotent,
 and another Runtime has an independent backlog. The optional SDK
 `TriggerBacklogProvider` reports the current pending count and limit. Every

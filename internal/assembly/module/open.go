@@ -11,7 +11,6 @@ import (
 	foundationhttp "github.com/domainry/domainry-foundation/modulehttp"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
-	schedulercapability "github.com/domainry/domainry-scheduler/capability"
 	httpexecutor "github.com/domainry/domainry-scheduler/internal/adapter/http"
 	application "github.com/domainry/domainry-scheduler/internal/application/scheduler"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
@@ -57,6 +56,10 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	if host == nil || host.Database() == nil || host.Dialect() == nil || strings.TrimSpace(host.WorkerID()) == "" || host.Definitions() == nil || host.Dispatcher() == nil || host.HTTPConnections() == nil {
 		return nil, fmt.Errorf("Scheduler host is incomplete")
 	}
+	definitionHost, ok := host.(modulehost.DefinitionStoreHost)
+	if !ok || definitionHost.DefinitionStore() == nil {
+		return nil, fmt.Errorf("Scheduler shared Definition store is unavailable")
+	}
 	switch mode {
 	case schedulersdk.DeploymentModeModule:
 		if registrar == nil {
@@ -80,7 +83,7 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	if err != nil {
 		return nil, err
 	}
-	definitions, err := schedulerstore.NewDefinitionStore(host.Database(), host.Dialect(), applicationRef.RuntimeID, mode)
+	definitions, err := schedulerstore.NewDefinitionStore(host.Database(), host.Dialect(), definitionHost.DefinitionStore(), applicationRef.RuntimeID, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -90,15 +93,15 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	}
 	ownerCtx, cancel := context.WithCancel(ctx)
 	directHTTP := httpexecutor.New(host.HTTPConnections(), nil)
-	capabilityBinding, err := schedulercapability.Open(schedulercapability.Inputs{})
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("build Scheduler capability disclosure: %w", err)
-	}
-	service := application.NewService(ownerCtx, cancel, applicationRef, host, directHTTP, runs, definitions, mode, capabilityBinding)
+	service := application.NewService(ownerCtx, cancel, applicationRef, host, directHTTP, runs, definitions, mode)
 	service.SetScheduledPlanRepository(plans)
 	if mode == schedulersdk.DeploymentModeModule {
-		commandReceipts, err := schedulerstore.NewCommandReceiptStore(host.Database(), host.Dialect(), applicationRef.RuntimeID)
+		operationHost, ok := host.(modulehost.OperationStoreHost)
+		if !ok || operationHost.OperationStore() == nil {
+			cancel()
+			return nil, fmt.Errorf("Scheduler Module shared Operation store is unavailable")
+		}
+		commandReceipts, err := schedulerstore.NewCommandReceiptStore(operationHost.OperationStore(), applicationRef.RuntimeID)
 		if err != nil {
 			cancel()
 			return nil, err

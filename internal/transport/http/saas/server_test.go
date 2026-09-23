@@ -10,11 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/domainry/domainry-foundation/modulecapability"
-	"github.com/domainry/domainry-foundation/modulecapability/contracttest"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/saashost/httptransport"
-	schedulercapability "github.com/domainry/domainry-scheduler/capability"
 )
 
 type serviceStub struct {
@@ -145,37 +142,12 @@ func TestServerAndSDKHTTPTransportPublishDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := &http.Client{Transport: handlerRoundTripper{handler: handler.Routes()}}
-	directCapability, err := schedulercapability.Open(schedulercapability.Inputs{})
+	transport, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: "http://scheduler.test", Token: "secret", Client: client})
 	if err != nil {
 		t.Fatal(err)
 	}
-	directSummary, err := directCapability.CapabilitySummary(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	transport, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: "http://scheduler.test", Token: "secret", Client: client, CapabilityContractSHA256: directSummary.Identity.ContractSHA256})
-	if err != nil {
-		t.Fatal(err)
-	}
-	contracttest.VerifyBinding(t, transport)
 	if descriptor, err := transport.Descriptor(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"}); err != nil || descriptor.Mode != schedulersdk.DeploymentModeSaaS {
 		t.Fatalf("descriptor=%#v err=%v", descriptor, err)
-	}
-	remoteSummary, err := transport.CapabilitySummary(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertCanonicalEqual(t, directSummary, remoteSummary)
-	for _, category := range directSummary.Categories {
-		directDocument, directErr := directCapability.CapabilityCategory(t.Context(), category.Key)
-		remoteDocument, remoteErr := transport.CapabilityCategory(t.Context(), category.Key)
-		if directErr != nil || remoteErr != nil {
-			t.Fatalf("capability category %q: direct=%v remote=%v", category.Key, directErr, remoteErr)
-		}
-		assertCanonicalEqual(t, directDocument, remoteDocument)
-	}
-	if _, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: "http://scheduler.test", Token: "secret", Client: client, CapabilityContractSHA256: strings.Repeat("0", 64)}); err == nil {
-		t.Fatal("Scheduler Remote accepted a stale capability digest")
 	}
 	session, err := transport.BeginDefinitionPublisherSession(t.Context(), schedulersdk.ApplicationRef{RuntimeID: "runtime-a"})
 	if err != nil {
@@ -204,9 +176,7 @@ func TestServerAndSDKTransportPreserveScheduledPlanOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	directCapability, _ := schedulercapability.Open(schedulercapability.Inputs{})
-	summary, _ := directCapability.CapabilitySummary(t.Context())
-	transport, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: "http://scheduler.test", Token: "secret", Client: &http.Client{Transport: handlerRoundTripper{handler: handler.Routes()}}, CapabilityContractSHA256: summary.Identity.ContractSHA256})
+	transport, err := httptransport.Open(t.Context(), httptransport.Config{Endpoint: "http://scheduler.test", Token: "secret", Client: &http.Client{Transport: handlerRoundTripper{handler: handler.Routes()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,20 +308,5 @@ func TestServerRejectsCredentialsThatAreMissingOrSharedAcrossApplications(t *tes
 	}
 	if _, err := New(Options{ApplicationTokens: map[string]string{"runtime-a": "  "}, Service: service}); err == nil {
 		t.Fatal("server accepted an empty bearer credential")
-	}
-}
-
-func assertCanonicalEqual(t *testing.T, left, right any) {
-	t.Helper()
-	leftBytes, err := modulecapability.CanonicalJSON(left)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rightBytes, err := modulecapability.CanonicalJSON(right)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(leftBytes) != string(rightBytes) {
-		t.Fatalf("canonical mismatch\nleft=%s\nright=%s", leftBytes, rightBytes)
 	}
 }

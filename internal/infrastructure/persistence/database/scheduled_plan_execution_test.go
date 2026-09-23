@@ -225,7 +225,7 @@ func assertDefinitionCursor(t *testing.T, db *sql.DB, key string, enabled bool, 
 	t.Helper()
 	var raw, gotStatus, gotSource string
 	var gotEnabled bool
-	if err := db.QueryRowContext(t.Context(), `SELECT enabled, next_run_at, last_run_status, source_kind FROM _scheduler_definition_states WHERE runtime_id = ? AND definition_key = ?`, "runtime-plan", key).Scan(&gotEnabled, &raw, &gotStatus, &gotSource); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT enabled, next_run_at, last_run_status, source_kind FROM _scheduler_schedules WHERE runtime_id = ? AND schedule_id = ?`, "runtime-plan", key).Scan(&gotEnabled, &raw, &gotStatus, &gotSource); err != nil {
 		t.Fatal(err)
 	}
 	got, err := time.Parse(time.RFC3339Nano, raw)

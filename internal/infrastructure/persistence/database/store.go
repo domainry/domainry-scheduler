@@ -6,6 +6,8 @@ package database
 import (
 	"context"
 
+	sharedoperation "github.com/domainry/domainry-foundation/operation"
+	metadatasdk "github.com/domainry/domainry-metadata-sdk"
 	"github.com/domainry/domainry-orm/sqlhost"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	schedulermodulehost "github.com/domainry/domainry-scheduler-sdk/modulehost"
@@ -23,12 +25,12 @@ func NewStore(database schedulermodulehost.Database, dialect schedulermodulehost
 	return schedulerstore.New(database, dialect, runtimeID, workerID)
 }
 
-func NewDefinitionStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect, runtimeID string, mode schedulersdk.DeploymentMode) (DefinitionStore, error) {
-	return schedulerstore.NewDefinitionStore(database, dialect, runtimeID, mode)
+func NewDefinitionStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect, shared metadatasdk.DefinitionStore, runtimeID string, mode schedulersdk.DeploymentMode) (DefinitionStore, error) {
+	return schedulerstore.NewDefinitionStore(database, dialect, shared, runtimeID, mode)
 }
 
-func NewCommandReceiptStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect, runtimeID string) (*CommandReceiptStore, error) {
-	return schedulerstore.NewCommandReceiptStore(database, dialect, runtimeID)
+func NewCommandReceiptStore(operations sharedoperation.Store, runtimeID string) (*CommandReceiptStore, error) {
+	return schedulerstore.NewCommandReceiptStore(operations, runtimeID)
 }
 
 func NewScheduledPlanStore(database schedulermodulehost.Database, dialect schedulermodulehost.Dialect, runtimeID string) (*ScheduledPlanStore, error) {
@@ -52,5 +54,5 @@ func EnsureSchema(ctx context.Context, database sqlhost.Database, driver, schema
 	if err != nil {
 		return err
 	}
-	return migration.EnsureSchema(ctx, database, renderer, migrations)
+	return migration.EnsureSchema(ctx, database, renderer, "scheduler", migrations)
 }

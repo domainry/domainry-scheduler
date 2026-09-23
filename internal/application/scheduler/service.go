@@ -11,7 +11,6 @@ import (
 	"time"
 
 	actioncontract "github.com/domainry/domainry-foundation/action"
-	"github.com/domainry/domainry-foundation/modulecapability"
 	"github.com/domainry/domainry-foundation/modulehttp"
 	"github.com/domainry/domainry-foundation/worker"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
@@ -42,7 +41,6 @@ type Service struct {
 	workerDone           chan struct{}
 	closed               bool
 	now                  func() time.Time
-	capability           modulecapability.Binding
 	httpAdapters         []modulehttp.Adapter
 }
 
@@ -50,41 +48,18 @@ type fencedDefinitionSnapshotProjector interface {
 	ApplyDefinitionSnapshot(context.Context, schedulerpersistence.DefinitionSnapshot, time.Time) (bool, error)
 }
 
-func NewService(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, directHTTP modulehost.Dispatcher, runs modulehost.RunStore, definitions schedulerpersistence.DefinitionRepository, mode schedulersdk.DeploymentMode, capabilities ...modulecapability.Binding) *Service {
+func NewService(ctx context.Context, cancel context.CancelFunc, application schedulersdk.ApplicationRef, host modulehost.Host, directHTTP modulehost.Dispatcher, runs modulehost.RunStore, definitions schedulerpersistence.DefinitionRepository, mode schedulersdk.DeploymentMode) *Service {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if cancel == nil {
 		ctx, cancel = context.WithCancel(ctx)
 	}
-	var capability modulecapability.Binding
-	if len(capabilities) != 0 {
-		capability = capabilities[0]
-	}
 	defaults := schedulersdk.NormalizeWorkerConfig(schedulersdk.WorkerConfig{})
 	if backlog, ok := runs.(modulehost.TriggerBacklogStore); ok {
 		_ = backlog.ConfigureTriggerBacklogLimit(defaults.MaxPendingTriggers)
 	}
-	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: defaults.LeaseTTL, dispatchTimeout: defaults.DispatchTimeout, capability: capability, now: time.Now}
-}
-
-func (b *Service) CapabilitySummary(ctx context.Context) (modulecapability.ModuleSummary, error) {
-	if b.capability == nil {
-		return modulecapability.ModuleSummary{}, fmt.Errorf("Scheduler capability binding is unavailable")
-	}
-	return b.capability.CapabilitySummary(ctx)
-}
-func (b *Service) CapabilityCategory(ctx context.Context, key string) (modulecapability.CategoryDocument, error) {
-	if b.capability == nil {
-		return modulecapability.CategoryDocument{}, fmt.Errorf("Scheduler capability binding is unavailable")
-	}
-	return b.capability.CapabilityCategory(ctx, key)
-}
-func (b *Service) ValidateCapabilityCandidate(ctx context.Context, request modulecapability.ValidationRequest) (modulecapability.ValidationResult, error) {
-	if b.capability == nil {
-		return modulecapability.ValidationResult{}, fmt.Errorf("Scheduler capability binding is unavailable")
-	}
-	return b.capability.ValidateCapabilityCandidate(ctx, request)
+	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: defaults.LeaseTTL, dispatchTimeout: defaults.DispatchTimeout, now: time.Now}
 }
 
 func (b *Service) Descriptor() schedulersdk.Descriptor {
