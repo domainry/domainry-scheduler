@@ -87,7 +87,7 @@ go run ./cmd/scheduler-server
 
 The SaaS assembly can resolve a different callback endpoint and credential for
 each Runtime. Scheduler tables,
-leases, run evidence and the standalone `_schema_migrations` ledger stay in the
+leases, queryable run history and the standalone `_schema_migrations` ledger stay in the
 Scheduler database. Scheduler and its embedded Metadata module use
 owner-qualified rows in that one ledger; there is no Metadata-private ledger.
 Module mode uses the Runtime pool and shared migration ledger, but the same

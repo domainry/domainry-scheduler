@@ -35,7 +35,7 @@ For a calendar schedule, `business_calendar_key` selects the Runtime-owned immut
 | Poll a provider every 15 minutes | Fixed interval schedule targeting an Integration synchronization Operation | Declare interval anchor, overlap policy, timeout, and idempotent sync cursor | Using a calendar expression whose drift/overlap semantics are undefined |
 | Expire overdue orders every morning | `business_action` target | Declare the order Object, exact Action key, JSON object payload, and a least-privilege system-managed service Role; Runtime executes through the Action Application Service | Calling the project Handler directly or silently running as installation system |
 | Invoke a governed external synchronization target | `http` target plus `connection_key` | Select a published target key and Integration-owned connection, keep the payload bounded, and preserve Scheduler window identity across delivery retries; if Deck lacks this shape, add the typed Scheduler adapter before authoring it | Putting an arbitrary URL, bearer token, or generic callback in the schedule, or dropping the requirement because an adapter is missing |
-| A missed nightly maintenance window should not run during peak hours | Explicit skip/catch-up policy | Configure skip or bounded catch-up window and make the decision visible in run evidence | Automatically replaying every missed occurrence without considering business impact |
+| A missed nightly maintenance window should not run during peak hours | Explicit skip/catch-up policy | Configure skip or bounded catch-up window and make the decision visible in run history | Automatically replaying every missed occurrence without considering business impact |
 
 ## Example
 

@@ -27,7 +27,7 @@ Ask whether there is an existing process instance. If yes, persist its wait/cont
 | Business requirement | Adapt with | Concrete implementation | Wrong adaptation |
 | --- | --- | --- | --- |
 | One approval instance must resume at its deadline | Workflow wait/timer | Persist deadline and correlation inside the Workflow instance; resume exactly that instance once, including after restart | Creating a standalone recurring Scheduler definition for each approval |
-| Every night the system scans all overdue approvals | Scheduler recurrence targeting a bounded scan Operation | Scheduler owns nightly timezone/catch-up/run evidence; the target queries authorized overdue work and acts idempotently | Keeping one Workflow instance alive forever to implement a global nightly loop |
+| Every night the system scans all overdue approvals | Scheduler recurrence targeting a bounded scan Operation | Scheduler owns nightly timezone/catch-up behavior and queryable run history; the target queries authorized overdue work and acts idempotently | Keeping one Workflow instance alive forever to implement a global nightly loop |
 | Workflow retries a step shortly after a transient owner failure | Workflow step retry when it belongs to process execution | Preserve step/process context and target idempotency in Workflow | Creating a reusable Scheduler schedule for an internal step retry |
 | A monthly Workflow must start as a new process instance | Scheduler targeting Workflow start | Give each calendar occurrence a stable run key and typed period input; Workflow owns the newly started process | Modeling recurrence as a wait at the end of one never-ending Workflow instance |
 | User schedules one reminder for tomorrow | Existing Workflow timer or an owner-specific appointment model | If it resumes an existing process, persist one Workflow timer; if reminder creation is its own business lifecycle, model that lifecycle and let its owner arrange delivery | Creating a global recurring Scheduler definition merely because the requirement contains a time |
@@ -42,4 +42,4 @@ Workflow task authority and Scheduler service authority are separate. Neither in
 
 ## Boundaries
 
-Workflow owns process state; Scheduler owns independent clocks and run evidence.
+Workflow owns process state; Scheduler owns independent clocks and queryable run history.
