@@ -10,6 +10,7 @@ import (
 
 	shareddefinition "github.com/domainry/domainry-foundation/definition"
 	foundationhttp "github.com/domainry/domainry-foundation/modulehttp"
+	sharedoperation "github.com/domainry/domainry-foundation/operation"
 	metadatasdk "github.com/domainry/domainry-metadata-sdk"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
@@ -84,6 +85,10 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 		return nil, fmt.Errorf("open Scheduler Definition persistence: %w", err)
 	}
 	definitionsStore := metadatasdk.AdaptDefinitionStore(definitionKernel)
+	operationKernel, err := sharedoperation.Open(ctx, host.Database(), host.Dialect(), host.Migrations())
+	if err != nil {
+		return nil, fmt.Errorf("open Scheduler Operations persistence: %w", err)
+	}
 	runs, err := schedulerstore.NewStore(host.Database(), host.Dialect(), applicationRef.RuntimeID, host.WorkerID())
 	if err != nil {
 		return nil, err
@@ -101,12 +106,7 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	service := application.NewService(ownerCtx, cancel, applicationRef, host, directHTTP, runs, definitions, mode)
 	service.SetScheduledPlanRepository(plans)
 	if mode == schedulersdk.DeploymentModeModule {
-		operationHost, ok := host.(modulehost.OperationStoreHost)
-		if !ok || operationHost.OperationStore() == nil {
-			cancel()
-			return nil, fmt.Errorf("Scheduler Module shared Operation store is unavailable")
-		}
-		commandReceipts, err := schedulerstore.NewCommandReceiptStore(operationHost.OperationStore(), applicationRef.RuntimeID)
+		commandReceipts, err := schedulerstore.NewCommandReceiptStore(operationKernel, applicationRef.RuntimeID)
 		if err != nil {
 			cancel()
 			return nil, err

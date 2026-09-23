@@ -9,12 +9,10 @@ import (
 	"testing"
 	"time"
 
-	sharedoperation "github.com/domainry/domainry-foundation/operation"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	schedulerstore "github.com/domainry/domainry-scheduler/internal/infrastructure/persistence/database"
-	operationstore "github.com/domainry/domainry-scheduler/internal/testsupport/operationstore"
 	_ "modernc.org/sqlite"
 )
 
@@ -54,7 +52,6 @@ type restartModuleHost struct {
 	mu         sync.Mutex
 	revision   int64
 	dispatch   chan schedulersdk.Trigger
-	operations sharedoperation.Store
 }
 
 func (h *restartModuleHost) Definitions() modulehost.DefinitionProvider { return h }
@@ -66,14 +63,6 @@ func (h *restartModuleHost) Database() modulehost.Database             { return 
 func (h *restartModuleHost) Dialect() modulehost.Dialect               { return h.dialect }
 func (h *restartModuleHost) Migrations() modulehost.MigrationRegistrar { return h.migrations }
 func (*restartModuleHost) WorkerID() string                            { return "module-restart-worker" }
-func (h *restartModuleHost) OperationStore() sharedoperation.Store {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.operations == nil {
-		h.operations = operationstore.New()
-	}
-	return h.operations
-}
 func (h *restartModuleHost) Snapshot(context.Context) (schedulersdk.DefinitionSnapshot, error) {
 	h.mu.Lock()
 	h.revision++
