@@ -11,6 +11,7 @@ import (
 	shareddefinition "github.com/domainry/domainry-foundation/definition"
 	foundationhttp "github.com/domainry/domainry-foundation/modulehttp"
 	sharedoperation "github.com/domainry/domainry-foundation/operation"
+	sharedworkerscope "github.com/domainry/domainry-foundation/workerscope"
 	metadatasdk "github.com/domainry/domainry-metadata-sdk"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
@@ -88,6 +89,9 @@ func open(ctx context.Context, applicationRef schedulersdk.ApplicationRef, host 
 	operationKernel, err := sharedoperation.Open(ctx, host.Database(), host.Dialect(), host.Migrations())
 	if err != nil {
 		return nil, fmt.Errorf("open Scheduler Operations persistence: %w", err)
+	}
+	if _, err := sharedworkerscope.Open(ctx, host.Database(), host.Dialect(), host.Migrations()); err != nil {
+		return nil, fmt.Errorf("open Scheduler Worker Scope persistence: %w", err)
 	}
 	runs, err := schedulerstore.NewStore(host.Database(), host.Dialect(), applicationRef.RuntimeID, host.WorkerID())
 	if err != nil {

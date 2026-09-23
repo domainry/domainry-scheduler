@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/domainry/domainry-foundation/requestcontext"
+	sharedworkerscope "github.com/domainry/domainry-foundation/workerscope"
 	"github.com/domainry/domainry-orm/query"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
@@ -25,12 +26,13 @@ type Store struct {
 	runtimeID, workerID string
 	capacityMu          sync.RWMutex
 	maxPendingTriggers  int
+	workerScopes        *sharedworkerscope.Store
 }
 
 const (
 	definitionStateSourceRuntime = "runtime_definition"
 	definitionStateSourcePlan    = "scheduled_plan"
-	schedulerCapacityOwner       = "scheduler_trigger_capacity"
+	schedulerCapacityOwner       = sharedworkerscope.OwnerSchedulerTriggerCapacity
 	schedulerCapacityRecovery    = "transactional_guard"
 )
 
@@ -50,7 +52,7 @@ func New(db modulehost.Database, dialect modulehost.Dialect, runtimeID, workerID
 		return nil, fmt.Errorf("Scheduler runtime and worker identity are required")
 	}
 	defaults := schedulersdk.NormalizeWorkerConfig(schedulersdk.WorkerConfig{})
-	return &Store{db: db, dialect: dialect, runtimeID: runtimeID, workerID: workerID, maxPendingTriggers: defaults.MaxPendingTriggers}, nil
+	return &Store{db: db, dialect: dialect, runtimeID: runtimeID, workerID: workerID, maxPendingTriggers: defaults.MaxPendingTriggers, workerScopes: sharedworkerscope.NewStore(db, dialect)}, nil
 }
 
 func (s *Store) ConfigureTriggerBacklogLimit(limit int) error {
@@ -87,26 +89,7 @@ func (s *Store) TriggerBacklog(ctx context.Context) (schedulersdk.TriggerBacklog
 }
 
 func (s *Store) lockTriggerCapacity(ctx context.Context, tx *sql.Tx) error {
-	digest := sha256.Sum256([]byte(schedulerCapacityOwner + "\x00" + s.runtimeID))
-	id := "worker_scope:" + hex.EncodeToString(digest[:12])
-	statement, args, err := query.NewInsertBuilder(s.dialect, "_worker_scopes").
-		Columns("id", "owner", "scope_key", "checkpoint", "updated_at").Values(id, schedulerCapacityOwner, s.runtimeID, int64(1), "").
-		OnConflictDoNothing("owner", "scope_key").Build()
-	if err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, statement, args...); err != nil {
-		return err
-	}
-	// An idempotent write is the portable database lock used elsewhere in this
-	// store. It serializes count + claim across every supported store profile.
-	statement, args, err = query.NewUpdateBuilder(s.dialect, "_worker_scopes").
-		Set("checkpoint", int64(1)).Where(query.And(query.Equal("owner", schedulerCapacityOwner), query.Equal("scope_key", s.runtimeID))).Build()
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, statement, args...)
-	return err
+	return s.workerScopes.LockCapacity(ctx, tx, sharedworkerscope.NewIdentity(schedulerCapacityOwner, s.runtimeID), time.Time{})
 }
 
 func (s *Store) checkTriggerCapacity(ctx context.Context, tx *sql.Tx) error {

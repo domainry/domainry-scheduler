@@ -7,6 +7,7 @@ import (
 	"context"
 
 	sharedoperation "github.com/domainry/domainry-foundation/operation"
+	sharedworkerscope "github.com/domainry/domainry-foundation/workerscope"
 	metadatasdk "github.com/domainry/domainry-metadata-sdk"
 	"github.com/domainry/domainry-orm/sqlhost"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
@@ -54,5 +55,18 @@ func EnsureSchema(ctx context.Context, database sqlhost.Database, driver, schema
 	if err != nil {
 		return err
 	}
-	return migration.EnsureSchema(ctx, database, renderer, "scheduler", migrations)
+	if err := migration.EnsureSchema(ctx, database, renderer, "scheduler", migrations); err != nil {
+		return err
+	}
+	_, err = sharedworkerscope.Open(ctx, database, renderer, schedulerSaaSWorkerScopeMigrations{database: database, renderer: renderer})
+	return err
+}
+
+type schedulerSaaSWorkerScopeMigrations struct {
+	database sqlhost.Database
+	renderer schedulermodulehost.Dialect
+}
+
+func (m schedulerSaaSWorkerScopeMigrations) ApplyOwnedMigrations(ctx context.Context, owner string, migrations []sharedworkerscope.SchemaMigration) error {
+	return migration.EnsureSchema(ctx, m.database, m.renderer, owner, migrations)
 }

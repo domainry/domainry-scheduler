@@ -8,7 +8,7 @@ import (
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
 
-const SchemaVersion uint = 2
+const SchemaVersion uint = 1
 
 type Migration = ormmigration.Migration
 
@@ -61,28 +61,7 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 		}
 		statements = append(statements, statement)
 	}
-	workerScopeStatement, _, err := ormschema.NewTable(r, "_worker_scopes").IfNotExists().Columns(
-		required("id", ormschema.TextKey(191)),
-		required("owner", ormschema.TextKey(191)),
-		required("scope_key", ormschema.TextKey(191)),
-		ormschema.Column("cursor", ormschema.TextKey(191)).NotNull().DefaultValue(""),
-		ormschema.Column("checkpoint", ormschema.BigInt()).NotNull().DefaultValue(0),
-		ormschema.Column("capacity", ormschema.BigInt()).NotNull().DefaultValue(0),
-		ormschema.Column("lease_owner", ormschema.TextKey(191)).NotNull().DefaultValue(""),
-		ormschema.Column("lease_expires_at", ormschema.TextKey(40)).NotNull().DefaultValue(""),
-		ormschema.Column("fencing_token", ormschema.BigInt()).NotNull().DefaultValue(0),
-		ormschema.Column("last_started_at", ormschema.TextKey(40)).NotNull().DefaultValue(""),
-		ormschema.Column("last_completed_at", ormschema.TextKey(40)).NotNull().DefaultValue(""),
-		ormschema.Column("last_error", ormschema.Text()).NotNull().DefaultValue(""),
-		ormschema.Column("updated_at", ormschema.TextKey(40)).NotNull().DefaultValue(""),
-	).PrimaryKey("id").Unique("owner", "scope_key").Build()
-	if err != nil {
-		return nil, fmt.Errorf("build shared worker scope table: %w", err)
-	}
-	return []modulehost.SchemaMigration{
-		{Version: 1, Name: "scheduler_foundation", Statements: statements},
-		{Version: 2, Name: "scheduler_trigger_capacity", Statements: []string{workerScopeStatement}},
-	}, nil
+	return []modulehost.SchemaMigration{{Version: 1, Name: "scheduler_foundation", Statements: statements}}, nil
 }
 
 func required(name string, kind ormschema.ColumnType) ormschema.ColumnDefinition {

@@ -258,16 +258,8 @@ func TestDatabaseClaimRunsOnOnlyOneMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	migrations, err := SchemaMigrations("sqlite", "")
-	if err != nil {
+	if err := EnsureSchema(t.Context(), db, "sqlite", ""); err != nil {
 		t.Fatal(err)
-	}
-	for _, migration := range migrations {
-		for _, statement := range migration.Statements {
-			if _, err := db.ExecContext(t.Context(), statement); err != nil {
-				t.Fatal(err)
-			}
-		}
 	}
 	dialect, err := Renderer("sqlite", "")
 	if err != nil {

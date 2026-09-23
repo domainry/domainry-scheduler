@@ -15,7 +15,7 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(migrations) != 2 || len(migrations[0].Statements) != 2 || len(migrations[1].Statements) != 1 {
+			if len(migrations) != 1 || len(migrations[0].Statements) != 2 {
 				t.Fatalf("unexpected migration inventory: %#v", migrations)
 			}
 			for _, migration := range migrations {
@@ -28,8 +28,8 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			if !strings.Contains(migrations[0].Statements[0], "_scheduler_schedules") {
 				t.Fatalf("Scheduler canonical schedule table is missing: %q", migrations[0].Statements[0])
 			}
-			if !strings.Contains(migrations[1].Statements[0], "_worker_scopes") {
-				t.Fatalf("Scheduler capacity guard table is missing: %q", migrations[1].Statements[0])
+			if strings.Contains(strings.Join(migrations[0].Statements, "\n"), "_worker_scopes") {
+				t.Fatal("Scheduler migration still owns the shared Worker Scope table")
 			}
 			for _, migration := range migrations {
 				for _, statement := range migration.Statements {
