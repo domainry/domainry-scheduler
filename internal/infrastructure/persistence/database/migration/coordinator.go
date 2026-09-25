@@ -42,7 +42,7 @@ func ensureLedger(ctx context.Context, database sqlhost.Database, renderer modul
 		schema.Column("name", schema.TextKey(191)).NotNull(),
 		schema.Column("checksum", schema.TextKey(64)).NotNull(),
 		schema.Column("dirty", schema.Boolean()).NotNull(),
-		schema.Column("applied_at", schema.TextKey(40)).NotNull(),
+		schema.Column("applied_at", schema.BigInt()).NotNull(),
 	).PrimaryKey("owner", "version").Build()
 	if err != nil {
 		return fmt.Errorf("build Scheduler migration ledger: %w", err)
@@ -68,7 +68,7 @@ func applyOne(ctx context.Context, database sqlhost.Database, renderer modulehos
 	}
 	insert, insertArgs, err := query.NewInsertBuilder(renderer, ledgerTable).
 		Columns("owner", "version", "name", "checksum", "dirty", "applied_at").
-		Values(owner, migration.Version, strings.TrimSpace(migration.Name), checksum, true, "").Build()
+		Values(owner, migration.Version, strings.TrimSpace(migration.Name), checksum, true, int64(0)).Build()
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func applyOne(ctx context.Context, database sqlhost.Database, renderer modulehos
 		}
 	}
 	complete, completeArgs, err := query.NewUpdateBuilder(renderer, ledgerTable).
-		Set("dirty", false).Set("applied_at", time.Now().UTC().Format(time.RFC3339Nano)).
+		Set("dirty", false).Set("applied_at", time.Now().UTC().UnixMilli()).
 		Where(query.And(query.Equal("owner", owner), query.Equal("version", migration.Version), query.Equal("checksum", checksum), query.Equal("dirty", true))).Build()
 	if err != nil {
 		return err

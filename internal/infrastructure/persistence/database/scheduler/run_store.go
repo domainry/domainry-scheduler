@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -389,7 +390,8 @@ func (s *Store) Due(ctx context.Context, now time.Time, limit int) ([]modulehost
 	}
 	defer retries.Close()
 	for retries.Next() {
-		var key, scheduled string
+		var key string
+		var scheduled int64
 		if err := retries.Scan(&key, &scheduled); err != nil {
 			return nil, err
 		}
@@ -413,7 +415,8 @@ func scanDueRows(rows *sql.Rows) ([]dueDefinitionState, error) {
 	defer rows.Close()
 	var result []dueDefinitionState
 	for rows.Next() {
-		var raw, due string
+		var raw string
+		var due int64
 		if err := rows.Scan(&raw, &due); err != nil {
 			return nil, err
 		}
@@ -511,7 +514,7 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 	if err = tx.Commit(); err != nil {
 		return schedulersdk.Run{}, false, err
 	}
-	run := schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: id, DefinitionKey: due.Definition.Key, DefinitionRev: due.Definition.Revision, ScheduledFor: due.ScheduledFor.UTC(), WindowKey: windowKey, Target: due.Definition.Target, IdempotencyKey: id, Attempt: 1, Metadata: append(json.RawMessage(nil), due.Metadata...)}, Lease: schedulersdk.Lease{Owner: s.workerID, Token: 1, ExpiresAt: now.Add(ttl)}, Status: "leased", CreatedAt: now, UpdatedAt: now}
+	run := schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: id, DefinitionKey: due.Definition.Key, DefinitionRev: due.Definition.Revision, ScheduledFor: parseTime(formatTime(due.ScheduledFor)), WindowKey: windowKey, Target: due.Definition.Target, IdempotencyKey: id, Attempt: 1, Metadata: append(json.RawMessage(nil), due.Metadata...)}, Lease: schedulersdk.Lease{Owner: s.workerID, Token: 1, ExpiresAt: parseTime(formatTime(now.Add(ttl)))}, Status: "leased", CreatedAt: parseTime(formatTime(now)), UpdatedAt: parseTime(formatTime(now))}
 	return run, true, nil
 }
 
@@ -716,18 +719,20 @@ func (s *Store) DeadLetter(ctx context.Context, runID string) (schedulersdk.Dead
 	if err != nil {
 		return schedulersdk.DeadLetter{}, err
 	}
-	var definition, reason, failed string
-	var resolved, resolvedBy, operationID, resolutionReason sql.NullString
+	var definition, reason string
+	var failed int64
+	var resolved sql.NullInt64
+	var resolvedBy, operationID, resolutionReason sql.NullString
 	if err = s.db.QueryRowContext(ctx, queryValue, args...).Scan(&definition, &reason, &failed, &resolved, &resolvedBy, &operationID, &resolutionReason); err != nil {
 		return schedulersdk.DeadLetter{}, err
 	}
 	status := "open"
-	if resolved.Valid && strings.TrimSpace(resolved.String) != "" {
+	if resolved.Valid {
 		status = "resolved"
 	}
 	return schedulersdk.DeadLetter{
 		RunID: strings.TrimSpace(runID), DefinitionKey: definition, Status: status, Reason: reason,
-		FailedAt: parseTime(failed), ResolvedAt: parseTime(resolved.String), ResolvedBy: resolvedBy.String,
+		FailedAt: parseTime(failed), ResolvedAt: parseOptionalTime(resolved), ResolvedBy: resolvedBy.String,
 		ResolutionOperationID: operationID.String, ResolutionReason: resolutionReason.String,
 	}, nil
 }
@@ -750,18 +755,20 @@ func (s *Store) DeadLetters(ctx context.Context, limit int) ([]schedulersdk.Dead
 	defer rows.Close()
 	items := make([]schedulersdk.DeadLetter, 0)
 	for rows.Next() {
-		var runID, definition, reason, failed string
-		var resolved, resolvedBy, operationID, resolutionReason sql.NullString
+		var runID, definition, reason string
+		var failed int64
+		var resolved sql.NullInt64
+		var resolvedBy, operationID, resolutionReason sql.NullString
 		if err := rows.Scan(&runID, &definition, &reason, &failed, &resolved, &resolvedBy, &operationID, &resolutionReason); err != nil {
 			return nil, err
 		}
 		status := "open"
-		if resolved.Valid && strings.TrimSpace(resolved.String) != "" {
+		if resolved.Valid {
 			status = "resolved"
 		}
 		items = append(items, schedulersdk.DeadLetter{
 			RunID: runID, DefinitionKey: definition, Status: status, Reason: reason,
-			FailedAt: parseTime(failed), ResolvedAt: parseTime(resolved.String), ResolvedBy: resolvedBy.String,
+			FailedAt: parseTime(failed), ResolvedAt: parseOptionalTime(resolved), ResolvedBy: resolvedBy.String,
 			ResolutionOperationID: operationID.String, ResolutionReason: resolutionReason.String,
 		})
 	}
@@ -833,8 +840,10 @@ func (s *Store) get(ctx context.Context, id string) (schedulersdk.Run, error) {
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
-	var def, rev, scheduled, window, target, status, created, updated string
-	var metadata, owner, expires, receipt, last sql.NullString
+	var def, rev, window, target, status string
+	var scheduled, created, updated int64
+	var metadata, owner, receipt, last sql.NullString
+	var expires sql.NullInt64
 	var attempt int
 	var token int64
 	if err = s.db.QueryRowContext(ctx, queryValue, args...).Scan(&def, &rev, &scheduled, &window, &target, &metadata, &status, &attempt, &owner, &expires, &token, &receipt, &last, &created, &updated); err != nil {
@@ -844,7 +853,7 @@ func (s *Store) get(ctx context.Context, id string) (schedulersdk.Run, error) {
 	_ = json.Unmarshal([]byte(target), &targetRef)
 	var rc schedulersdk.DownstreamReceipt
 	_ = json.Unmarshal([]byte(receipt.String), &rc)
-	return schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: id, DefinitionKey: def, DefinitionRev: rev, ScheduledFor: parseTime(scheduled), WindowKey: window, Target: targetRef, IdempotencyKey: id, Attempt: attempt, Metadata: json.RawMessage(metadata.String)}, Lease: schedulersdk.Lease{Owner: owner.String, Token: token, ExpiresAt: parseTime(expires.String)}, Status: status, DownstreamReceipt: rc, LastError: last.String, CreatedAt: parseTime(created), UpdatedAt: parseTime(updated)}, nil
+	return schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: id, DefinitionKey: def, DefinitionRev: rev, ScheduledFor: parseTime(scheduled), WindowKey: window, Target: targetRef, IdempotencyKey: id, Attempt: attempt, Metadata: json.RawMessage(metadata.String)}, Lease: schedulersdk.Lease{Owner: owner.String, Token: token, ExpiresAt: parseOptionalTime(expires)}, Status: status, DownstreamReceipt: rc, LastError: last.String, CreatedAt: parseTime(created), UpdatedAt: parseTime(updated)}, nil
 }
 
 func (s *Store) definition(ctx context.Context, key string) (schedulersdk.Definition, bool, error) {
@@ -915,15 +924,26 @@ func deadLetterResolutionIdentity(ctx context.Context) (string, string) {
 	return actor, operationID
 }
 
-func formatTime(v time.Time) string {
+func formatTime(v time.Time) int64 {
 	if v.IsZero() {
-		return ""
+		return 0
 	}
-	return v.UTC().Format(time.RFC3339Nano)
+	return v.UTC().UnixMilli()
 }
-func parseTime(v string) time.Time { t, _ := time.Parse(time.RFC3339Nano, v); return t }
+func parseTime(v int64) time.Time {
+	if v == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(v).UTC()
+}
+func parseOptionalTime(v sql.NullInt64) time.Time {
+	if !v.Valid {
+		return time.Time{}
+	}
+	return parseTime(v.Int64)
+}
 func runID(runtimeID, key string, scheduled time.Time) string {
-	sum := sha256.Sum256([]byte(runtimeID + "\x00" + key + "\x00" + formatTime(scheduled)))
+	sum := sha256.Sum256([]byte(runtimeID + "\x00" + key + "\x00" + strconv.FormatInt(formatTime(scheduled), 10)))
 	return "run_" + hex.EncodeToString(sum[:16])
 }
 func isUnique(err error) bool {

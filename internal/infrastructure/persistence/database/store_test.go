@@ -243,11 +243,12 @@ func TestOrdinaryClaimKeepsFractionalScheduleButUsesLegacySecondPrecisionWindow(
 		t.Fatalf("run=%+v claimed=%t err=%v", run, claimed, err)
 	}
 	wantWindow := scheduledFor.UTC().Format(time.RFC3339)
-	if !run.Trigger.ScheduledFor.Equal(scheduledFor) || run.Trigger.WindowKey != wantWindow || run.Trigger.WindowKey == scheduledFor.UTC().Format(time.RFC3339Nano) {
+	wantScheduledFor := scheduledFor.UTC().Truncate(time.Millisecond)
+	if !run.Trigger.ScheduledFor.Equal(wantScheduledFor) || run.Trigger.WindowKey != wantWindow || run.Trigger.WindowKey == scheduledFor.UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("run=%+v want window=%q", run, wantWindow)
 	}
 	persisted, err := store.Get(t.Context(), run.Trigger.RunID)
-	if err != nil || !persisted.Trigger.ScheduledFor.Equal(scheduledFor) || persisted.Trigger.WindowKey != wantWindow {
+	if err != nil || !persisted.Trigger.ScheduledFor.Equal(wantScheduledFor) || persisted.Trigger.WindowKey != wantWindow {
 		t.Fatalf("persisted=%+v err=%v", persisted, err)
 	}
 }
@@ -467,11 +468,11 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := store.Reconcile(t.Context(), definition, first.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	var cursor string
+	var cursor int64
 	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_schedules WHERE runtime_id = ? AND schedule_id = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(first) {
+	if got := time.UnixMilli(cursor).UTC(); !got.Equal(first) {
 		t.Fatalf("same revision cursor=%s want=%s", got, first)
 	}
 	manual := first.Add(90 * time.Minute)
@@ -481,7 +482,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_schedules WHERE runtime_id = ? AND schedule_id = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(manual) {
+	if got := time.UnixMilli(cursor).UTC(); !got.Equal(manual) {
 		t.Fatalf("manual reschedule cursor=%s want=%s", got, manual)
 	}
 	definition.Revision = "v2"
@@ -492,7 +493,7 @@ func TestReconcilePreservesCursorUntilDefinitionRevisionChanges(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT next_run_at FROM _scheduler_schedules WHERE runtime_id = ? AND schedule_id = ?`, "runtime-a", "daily").Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := time.Parse(time.RFC3339Nano, cursor); !got.Equal(changed) {
+	if got := time.UnixMilli(cursor).UTC(); !got.Equal(changed) {
 		t.Fatalf("changed revision cursor=%s want=%s", got, changed)
 	}
 }

@@ -176,7 +176,7 @@ func TestExpiredScheduledPlanLeaseIsRecoveredAfterRestart(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("run=%+v claimed=%t err=%v", run, claimed, err)
 	}
-	if _, err := db.ExecContext(t.Context(), `UPDATE _scheduler_runs SET lease_expires_at = ? WHERE runtime_id = ? AND run_id = ?`, time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano), "runtime-plan", run.Trigger.RunID); err != nil {
+	if _, err := db.ExecContext(t.Context(), `UPDATE _scheduler_runs SET lease_expires_at = ? WHERE runtime_id = ? AND run_id = ?`, time.Now().UTC().Add(-time.Second).UnixMilli(), "runtime-plan", run.Trigger.RunID); err != nil {
 		t.Fatal(err)
 	}
 	second, _ := NewStore(db, dialect, "runtime-plan", "worker-after")
@@ -223,13 +223,14 @@ func weekdayCalendarProtocol() *schedulersdk.BusinessCalendarSnapshot {
 
 func assertDefinitionCursor(t *testing.T, db *sql.DB, key string, enabled bool, want time.Time, status, source string) {
 	t.Helper()
-	var raw, gotStatus, gotSource string
+	var gotStatus, gotSource string
+	var raw int64
 	var gotEnabled bool
 	if err := db.QueryRowContext(t.Context(), `SELECT enabled, next_run_at, last_run_status, source_kind FROM _scheduler_schedules WHERE runtime_id = ? AND schedule_id = ?`, "runtime-plan", key).Scan(&gotEnabled, &raw, &gotStatus, &gotSource); err != nil {
 		t.Fatal(err)
 	}
-	got, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil || gotEnabled != enabled || !got.Equal(want) || gotStatus != status || gotSource != source {
-		t.Fatalf("key=%s enabled=%t cursor=%s status=%q source=%q parse=%v", key, gotEnabled, got, gotStatus, gotSource, err)
+	got := time.UnixMilli(raw).UTC()
+	if gotEnabled != enabled || !got.Equal(want.Truncate(time.Millisecond)) || gotStatus != status || gotSource != source {
+		t.Fatalf("key=%s enabled=%t cursor=%s status=%q source=%q", key, gotEnabled, got, gotStatus, gotSource)
 	}
 }
