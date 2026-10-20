@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
+	"github.com/domainry/domainry-foundation/logging"
 	"github.com/domainry/domainry-foundation/processhost"
 	ormsqlite "github.com/domainry/domainry-orm/sqlite"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
@@ -39,20 +41,32 @@ func run() (runErr error) {
 	if err != nil {
 		return err
 	}
-	defer func() { runErr = observability.Finish(context.Background(), nil, runErr) }()
+	started := false
+	startupFailure := logging.Failure{Stage: "configuration_load"}
+	defer func() {
+		if !started && runErr != nil {
+			observability.StartFailed(context.Background(), runErr, startupFailure)
+			runErr = errors.Join(runErr, observability.Close(context.Background(), nil))
+			return
+		}
+		runErr = observability.Finish(context.Background(), nil, runErr)
+	}()
 	config, err := configurationFromEnvironment()
 	if err != nil {
 		return err
 	}
+	startupFailure = logging.Failure{Stage: "database_initialize", Dependency: "scheduler_database"}
 	database, err := openOwnedDatabase(ctx, config)
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	startupFailure = logging.Failure{Stage: "dispatch_gateway_initialize", Dependency: "runtime"}
 	gateway, err := newDispatchGateway(config)
 	if err != nil {
 		return err
 	}
+	startupFailure = logging.Failure{Stage: "module_assembly"}
 	service, err := saasassembly.NewDatabaseService(saasassembly.DatabaseServiceOptions{
 		Context: ctx, Database: database, Driver: config.storeDriver, Schema: config.databaseSchema,
 		WorkerID: config.workerID, Worker: schedulersdk.WorkerConfig{Enabled: true, PollInterval: config.workerPollInterval, BatchSize: config.workerBatchSize, MaxPendingTriggers: config.maxPendingTriggers, DispatchTimeout: config.dispatchTimeout},
@@ -66,6 +80,7 @@ func run() (runErr error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /live", func(response http.ResponseWriter, _ *http.Request) { response.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /ready", func(response http.ResponseWriter, _ *http.Request) { response.WriteHeader(http.StatusNoContent) })
+	startupFailure = logging.Failure{Stage: "http_handler_initialize"}
 	schedulerHandler, err := saashttp.New(saashttp.Options{ApplicationTokens: map[string]string{config.runtimeID: config.bearerToken}, Service: service})
 	if err != nil {
 		return err
@@ -75,8 +90,14 @@ func run() (runErr error) {
 		Addr: config.httpAddress, Handler: observability.Handler("public", mux), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
+	startupFailure = logging.Failure{Stage: "listener_bind", Dependency: "public_listener"}
+	listener, err := net.Listen("tcp", config.httpAddress)
+	if err != nil {
+		return err
+	}
 	serveErrors := make(chan error, 1)
-	go func() { serveErrors <- httpServer.ListenAndServe() }()
+	go func() { serveErrors <- httpServer.Serve(listener) }()
+	started = true
 	observability.Started(ctx, map[string]any{"listener_group": "public"})
 	select {
 	case <-ctx.Done():
