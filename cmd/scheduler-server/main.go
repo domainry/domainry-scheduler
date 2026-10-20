@@ -17,6 +17,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
+	"github.com/domainry/domainry-foundation/processhost"
 	ormsqlite "github.com/domainry/domainry-orm/sqlite"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/dispatchgateway"
@@ -26,15 +27,19 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
+	if run() != nil {
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run() (runErr error) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	observability, err := processhost.Open(ctx, processhost.Config{ServiceName: "domainry-scheduler"})
+	if err != nil {
+		return err
+	}
+	defer func() { runErr = observability.Finish(context.Background(), nil, runErr) }()
 	config, err := configurationFromEnvironment()
 	if err != nil {
 		return err
@@ -67,13 +72,15 @@ func run() error {
 	}
 	mux.Handle("/", schedulerHandler)
 	httpServer := &http.Server{
-		Addr: config.httpAddress, Handler: mux, ReadHeaderTimeout: 5 * time.Second,
+		Addr: config.httpAddress, Handler: observability.Handler("public", mux), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- httpServer.ListenAndServe() }()
+	observability.Started(ctx, map[string]any{"listener_group": "public"})
 	select {
 	case <-ctx.Done():
+		observability.Stopping(context.Background(), map[string]any{"reason": "signal"})
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		return httpServer.Shutdown(shutdownCtx)

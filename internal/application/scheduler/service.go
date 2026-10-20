@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -391,13 +392,13 @@ func (b *Service) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 		return leaseErr
 	}
 	if err != nil {
-		_ = b.runs.Fail(ctx, run, err, domainservice.NextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
-		return err
+		failErr := b.runs.Fail(ctx, run, err, domainservice.NextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
+		return errors.Join(err, failErr)
 	}
 	if strings.TrimSpace(receipt.ID) == "" {
 		err = fmt.Errorf("downstream owner returned no durable receipt")
-		_ = b.runs.Fail(ctx, run, err, domainservice.NextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
-		return err
+		failErr := b.runs.Fail(ctx, run, err, domainservice.NextRetry(definition.Policy, run.Trigger.Attempt, time.Now().UTC()))
+		return errors.Join(err, failErr)
 	}
 	return b.runs.Accept(ctx, run, receipt)
 }
@@ -501,16 +502,20 @@ func (b *Service) runWorker(ctx context.Context, cancel context.CancelFunc, stop
 		close(done)
 		b.lifecycleMu.Unlock()
 	}()
-	// Module hosts own an in-process definition provider that is ready at
-	// worker start. SaaS snapshots arrive through the private Reconcile
-	// protocol and are synchronized before its worker is started; treating
-	// the initial empty SaaS host as a publication can disable durable state.
-	if b.mode == schedulersdk.DeploymentModeModule {
-		_ = b.Reconcile(ctx)
-		_, _ = b.hydrateScheduledPlans(ctx)
-	}
-	loopDone := worker.StartNamedLoop(ctx, "scheduler", config.PollInterval, func() {
-		_, _ = b.Tick(ctx, time.Now().UTC(), config.BatchSize)
+	initialized := b.mode != schedulersdk.DeploymentModeModule
+	loopDone := worker.StartNamedLoop(ctx, worker.Identity{Owner: "scheduler", Name: "dispatch"}, config.PollInterval, func(tickCtx context.Context) (worker.TickResult, error) {
+		// Module hosts own an in-process definition provider that is ready at
+		// worker start. Retry initialization until both durable views agree.
+		if !initialized {
+			reconcileErr := b.Reconcile(tickCtx)
+			hydrated, hydrateErr := b.hydrateScheduledPlans(tickCtx)
+			if err := errors.Join(reconcileErr, hydrateErr); err != nil {
+				return worker.TickResult{Worked: hydrated}, err
+			}
+			initialized = true
+		}
+		processed, err := b.Tick(tickCtx, time.Now().UTC(), config.BatchSize)
+		return worker.TickResult{Worked: processed > 0, ProcessedCount: processed}, err
 	})
 	<-loopDone
 }
