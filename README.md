@@ -34,7 +34,7 @@ definitions.
 ## Deployment topologies
 
 - Module: inject `module.NewFactory(module.OptionsFromEnvironment())` through `runtimehost.Options.SchedulerFactory`. Runtime lends its ORM database/dialect ports, shared migration ledger, published definitions and downstream dispatch ports; Scheduler owns the durable schema and repositories.
-- SaaS client: inject `remote.NewHTTPFactory(httptransport.ConfigFromEnvironment())`. Runtime publishes a revisioned definition snapshot to the Scheduler SaaS endpoint.
+- SaaS client: inject `module.NewHTTPSaaSFactory(httptransport.ConfigFromEnvironment())`. Runtime publishes a revisioned definition snapshot to the Scheduler SaaS endpoint.
 - SaaS server: run `go run ./cmd/scheduler-server`. The executable owns its database pool, Scheduler worker lifecycle and authenticated HTTP transport.
 
 The standalone process serves only the private
@@ -148,10 +148,10 @@ internal/
       schema/                           structured Scheduler-owned schema definitions
     mysql|postgres|sqlite/              database-specific ORM engines
 module/                                 public in-process Module factory
-remote/                                 public Scheduler SaaS client binding
 ```
 
-Only `module` and `remote` are public Go library packages. The standalone
+`module` is the only public implementation package and exposes both embedded
+and SaaS factory constructors. The standalone
 server is an executable; its assembly, adapters and transport stay below
 `internal` so applications cannot couple to implementation details. Module
 mode and SaaS mode assemble the same application service through

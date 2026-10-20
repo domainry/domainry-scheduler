@@ -14,7 +14,7 @@ func TestRepositoryRootContainsOnlyReviewedPackages(t *testing.T) {
 		t.Fatal("resolve architecture test path")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	allowed := map[string]bool{"admin": true, "cmd": true, "docs": true, "internal": true, "module": true, "remote": true}
+	allowed := map[string]bool{"cmd": true, "docs": true, "internal": true, "module": true}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
@@ -25,6 +25,27 @@ func TestRepositoryRootContainsOnlyReviewedPackages(t *testing.T) {
 		}
 		if !allowed[entry.Name()] {
 			t.Errorf("unreviewed Scheduler root directory %q; implementation packages belong below internal", entry.Name())
+		}
+	}
+}
+
+func TestAssemblyContainsOnlyDeploymentModes(t *testing.T) {
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve architecture test path")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "assembly"))
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := map[string]bool{"module": true, "saas": true}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		if !entry.IsDir() || !allowed[entry.Name()] {
+			t.Errorf("internal/assembly contains non-deployment entry %q", entry.Name())
 		}
 	}
 }
@@ -105,7 +126,7 @@ func TestSchedulerPersistenceUsesDomainryORM(t *testing.T) {
 func TestPublicAdaptersDoNotDependOnEachOther(t *testing.T) {
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	for _, packageName := range []string{"module", "remote"} {
+	for _, packageName := range []string{"module"} {
 		packageRoot := filepath.Join(root, packageName)
 		err := filepath.WalkDir(packageRoot, func(path string, entry os.DirEntry, err error) error {
 			if err != nil || entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
@@ -115,7 +136,7 @@ func TestPublicAdaptersDoNotDependOnEachOther(t *testing.T) {
 			if readErr != nil {
 				return readErr
 			}
-			for _, peer := range []string{"module", "remote"} {
+			for _, peer := range []string{"module"} {
 				if peer == packageName {
 					continue
 				}
@@ -146,7 +167,6 @@ func TestSchedulerCoreDoesNotDependOnOuterLayers(t *testing.T) {
 			}
 			for _, forbidden := range []string{
 				"github.com/domainry/domainry-scheduler/module",
-				"github.com/domainry/domainry-scheduler/remote",
 				"github.com/domainry/domainry-scheduler/internal/adapter",
 				"github.com/domainry/domainry-scheduler/internal/assembly",
 				"github.com/domainry/domainry-scheduler/internal/transport",

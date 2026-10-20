@@ -6,7 +6,10 @@ import (
 
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
+	"github.com/domainry/domainry-scheduler-sdk/saashost"
+	"github.com/domainry/domainry-scheduler-sdk/saashost/httptransport"
 	moduleassembly "github.com/domainry/domainry-scheduler/internal/assembly/module"
+	saasassembly "github.com/domainry/domainry-scheduler/internal/assembly/saas"
 )
 
 type Options struct{}
@@ -15,12 +18,22 @@ func OptionsFromEnvironment() Options { return Options{} }
 
 type Factory struct{ options Options }
 
+type SaaSFactory = saasassembly.Factory
+
 // SaaSHost is retained for callers that assemble a Scheduler-owned database
 // directly. The implementation is shared with the public server facade through
 // the internal hosted composition boundary.
 type SaaSHost = moduleassembly.SaaSHost
 
 func NewFactory(options Options) *Factory { return &Factory{options: options} }
+
+func NewSaaSFactory(transport ...saashost.Transport) SaaSFactory {
+	return saasassembly.NewFactory(transport...)
+}
+
+func NewHTTPSaaSFactory(config httptransport.Config) SaaSFactory {
+	return saasassembly.NewHTTPFactory(config)
+}
 
 func (*Factory) Open(context.Context, schedulersdk.ApplicationRef) (schedulersdk.Binding, error) {
 	return nil, fmt.Errorf("Scheduler Module host is required")
