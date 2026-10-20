@@ -570,6 +570,7 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		return
 	}
 	if code := schedule.ValidationCode(err); code != "" {
+		telemetry.RecordHTTPStatusError(w, http.StatusBadRequest, code)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": code, "params": schedule.ValidationParams(err)})
 		return
 	}
@@ -581,7 +582,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "backend.scheduler.request_cancelled")
 		return
 	}
-	writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "backend.scheduler.request_failed", "message": err.Error()})
+	telemetry.RecordHTTPStatusError(w, http.StatusInternalServerError, "backend.scheduler.request_failed", err)
+	writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "backend.scheduler.request_failed"})
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
