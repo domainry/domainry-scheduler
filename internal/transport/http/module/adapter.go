@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/domainry/domainry-foundation/httpresponse"
 	"github.com/domainry/domainry-foundation/modulehttp"
-	"github.com/domainry/domainry-foundation/telemetry"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/authoring"
 	"github.com/domainry/domainry-scheduler-sdk/persistence"
@@ -570,8 +570,7 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		return
 	}
 	if code := schedule.ValidationCode(err); code != "" {
-		telemetry.RecordHTTPStatusError(w, http.StatusBadRequest, code)
-		writeJSON(w, http.StatusBadRequest, map[string]any{"code": code, "params": schedule.ValidationParams(err)})
+		httpresponse.WriteError(w, nil, httpresponse.Failure{Status: http.StatusBadRequest, Code: code, Params: schedule.ValidationParams(err), Cause: err})
 		return
 	}
 	if errors.Is(err, schedulersdk.ErrTriggerBacklogFull) {
@@ -582,20 +581,16 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "backend.scheduler.request_cancelled")
 		return
 	}
-	telemetry.RecordHTTPStatusError(w, http.StatusInternalServerError, "backend.scheduler.request_failed", err)
-	writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "backend.scheduler.request_failed"})
+	httpresponse.WriteError(w, nil, httpresponse.Failure{Status: http.StatusInternalServerError, Code: "backend.scheduler.request_failed", Cause: err})
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
-	telemetry.RecordHTTPStatusError(w, status, code)
-	writeJSON(w, status, map[string]any{"code": code})
+	httpresponse.WriteError(w, nil, httpresponse.Failure{Status: status, Code: code})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	httpresponse.WriteJSON(w, status, value)
 }
 
 func operationReason(r *http.Request) string {

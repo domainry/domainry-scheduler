@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/domainry/domainry-foundation/httpresponse"
 	"github.com/domainry/domainry-foundation/telemetry"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/saashost"
@@ -102,26 +103,26 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	// SaaS has no equivalent trusted human principal contract, so it must not
 	// mount the /scheduler surface behind a machine credential.
 	if request.URL.Path == "/scheduler" || strings.HasPrefix(request.URL.Path, "/scheduler/") {
-		http.NotFound(response, request)
+		httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusNotFound, Code: "scheduler.route_not_found"})
 		return
 	}
 	authenticated, ok := s.authenticate(request)
 	if !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusUnauthorized, Code: "scheduler.service_credential_invalid"})
 		return
 	}
 	parts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
 	if len(parts) < 4 || len(parts) > 6 || parts[0] != "v1" || parts[1] != "applications" {
-		http.NotFound(response, request)
+		httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusNotFound, Code: "scheduler.route_not_found"})
 		return
 	}
 	requested := schedulersdk.ApplicationRef{RuntimeID: strings.TrimSpace(parts[2])}
 	if requested.Validate() != nil {
-		http.Error(response, "invalid application", http.StatusBadRequest)
+		httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusBadRequest, Code: "scheduler.application_invalid"})
 		return
 	}
 	if requested.RuntimeID != authenticated.RuntimeID {
-		http.Error(response, "forbidden", http.StatusForbidden)
+		httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusForbidden, Code: "scheduler.application_forbidden"})
 		return
 	}
 	// Pass only the identity resolved from the credential. The path and legacy
@@ -166,7 +167,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	case "plans":
 		plans, ok := s.service.(scheduledPlanService)
 		if !ok {
-			http.Error(response, "Scheduler plan records are unavailable", http.StatusServiceUnavailable)
+			httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusServiceUnavailable, Code: "scheduler.plan_records_unavailable"})
 			return
 		}
 		if len(parts) == 4 && request.Method == http.MethodPost {
@@ -370,47 +371,46 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 			return
 		}
 	default:
-		http.NotFound(response, request)
+		httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusNotFound, Code: "scheduler.route_not_found"})
 		return
 	}
 	if err != nil {
 		if errors.Is(err, schedulersdk.ErrScheduledPlanDeletionReadUnsupported) {
-			http.Error(response, "Scheduler plan deletion reading is unavailable", http.StatusNotImplemented)
+			httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusNotImplemented, Code: "scheduler.plan_deletion_read_unsupported", Cause: err})
 			return
 		}
 		if errors.Is(err, schedulersdk.ErrTriggerBacklogFull) {
-			http.Error(response, "Scheduler trigger backlog is full", http.StatusTooManyRequests)
+			httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusTooManyRequests, Code: "backend.scheduler.trigger_backlog_full", Cause: err})
 			return
 		}
 		if errors.Is(err, schedulersdk.ErrScheduledPlanInvalid) {
-			http.Error(response, "Scheduler plan is invalid", http.StatusBadRequest)
+			httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusBadRequest, Code: "scheduler.plan_invalid", Cause: err})
 			return
 		}
 		if errors.Is(err, schedulersdk.ErrScheduledPlanConflict) {
-			http.Error(response, "Scheduler plan idempotency conflict", http.StatusConflict)
+			httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusConflict, Code: "scheduler.plan_conflict", Cause: err})
 			return
 		}
 		if errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
-			http.Error(response, "Scheduler plan was not found", http.StatusNotFound)
+			httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusNotFound, Code: "scheduler.plan_not_found", Cause: err})
 			return
 		}
 		if errors.Is(err, schedulersdk.ErrDefinitionPublicationRequired) {
-			http.Error(response, "Scheduler definition publisher session required", http.StatusBadRequest)
+			httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusBadRequest, Code: "scheduler.definition_publication_required", Cause: err})
 			return
 		}
 		if errors.Is(err, schedulersdk.ErrDefinitionPublicationSessionMismatch) || errors.Is(err, schedulersdk.ErrDefinitionSnapshotStale) || errors.Is(err, schedulersdk.ErrDefinitionSnapshotConflict) {
-			http.Error(response, "Scheduler definition publication rejected", http.StatusConflict)
+			httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusConflict, Code: "scheduler.definition_publication_rejected", Cause: err})
 			return
 		}
-		http.Error(response, "Scheduler request failed", http.StatusBadGateway)
+		httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusBadGateway, Code: "scheduler.request_failed", Cause: err})
 		return
 	}
 	if value == nil {
-		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
+		httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusMethodNotAllowed, Code: "backend.method_not_allowed"})
 		return
 	}
-	response.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(response).Encode(value)
+	httpresponse.WriteJSON(response, http.StatusOK, value)
 }
 
 func schedulerRoutePattern(method, path string) string {
@@ -507,7 +507,7 @@ func decode(response http.ResponseWriter, request *http.Request, target any) boo
 	decoder := json.NewDecoder(http.MaxBytesReader(response, request.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		http.Error(response, "invalid Scheduler request", http.StatusBadRequest)
+		httpresponse.WriteError(response, request, httpresponse.Failure{Status: http.StatusBadRequest, Code: "scheduler.request_invalid", Cause: err})
 		return false
 	}
 	return true
