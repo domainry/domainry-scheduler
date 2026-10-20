@@ -12,6 +12,7 @@ import (
 	"time"
 
 	actioncontract "github.com/domainry/domainry-foundation/action"
+	"github.com/domainry/domainry-foundation/logging"
 	"github.com/domainry/domainry-foundation/modulehttp"
 	"github.com/domainry/domainry-foundation/worker"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
@@ -58,7 +59,9 @@ func NewService(ctx context.Context, cancel context.CancelFunc, application sche
 	}
 	defaults := schedulersdk.NormalizeWorkerConfig(schedulersdk.WorkerConfig{})
 	if backlog, ok := runs.(modulehost.TriggerBacklogStore); ok {
-		_ = backlog.ConfigureTriggerBacklogLimit(defaults.MaxPendingTriggers)
+		if err := backlog.ConfigureTriggerBacklogLimit(defaults.MaxPendingTriggers); err != nil {
+			logging.RecordFailure(ctx, "scheduler_backlog_limit_configure_failed", err, logging.Failure{Stage: "backlog_configure", Dependency: "run_store"})
+		}
 	}
 	return &Service{application: application, host: host, directHTTP: directHTTP, runs: runs, definitionRepository: definitions, mode: mode, ctx: ctx, cancel: cancel, definitions: map[string]schedulersdk.Definition{}, leaseTTL: defaults.LeaseTTL, dispatchTimeout: defaults.DispatchTimeout, now: time.Now}
 }
