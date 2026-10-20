@@ -320,7 +320,11 @@ func normalizeScheduledPlanCreate(value schedulersdk.ScheduledPlanCreate) (sched
 	if err := decoder.Decode(&input); err != nil {
 		return schedulersdk.ScheduledPlanCreate{}, err
 	}
-	value.Input, _ = json.Marshal(input)
+	encodedInput, err := json.Marshal(input)
+	if err != nil {
+		return schedulersdk.ScheduledPlanCreate{}, err
+	}
+	value.Input = encodedInput
 	return value, nil
 }
 

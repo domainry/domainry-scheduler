@@ -190,7 +190,11 @@ func schedulerCommandRequestHash(r *http.Request, actionKey string) (string, err
 		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return "", errors.New("request body has trailing JSON")
 		}
-		canonicalBody, _ = json.Marshal(value)
+		encodedBody, err := json.Marshal(value)
+		if err != nil {
+			return "", err
+		}
+		canonicalBody = encodedBody
 	}
 	digest := sha256.Sum256([]byte(strings.Join([]string{
 		strings.TrimSpace(actionKey),
