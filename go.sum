@@ -7,8 +7,8 @@ github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XL
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/domainry/domainry-foundation v0.2.0 h1:CwYrn+IHIiQs8ARqAZZzxfIW1E2sV3M2ncqqSUuFBR0=
-github.com/domainry/domainry-foundation v0.2.0/go.mod h1:nCw272N/NTkHfJNWvAGL8vZybUtOpgw3ZyCIshRSqF4=
+github.com/domainry/domainry-foundation v0.2.2 h1:XWugH7DFB4YU0mI5nBxSdNxg9C4AXaiw9haZIbzB+ss=
+github.com/domainry/domainry-foundation v0.2.2/go.mod h1:nCw272N/NTkHfJNWvAGL8vZybUtOpgw3ZyCIshRSqF4=
 github.com/domainry/domainry-metadata-sdk v0.1.9 h1:UY9mg9Dukq/rY3yCEHFEOgp3ncXTY7QGZL3rkq8mng0=
 github.com/domainry/domainry-metadata-sdk v0.1.9/go.mod h1:4DZbpauErBuGN6g8zkDSr5JCw6ntpVFeWbgZXuuQ3KY=
 github.com/domainry/domainry-orm v0.1.33 h1:gpCXkwDvJhJkiLMkA9awJ44KaFVtpBC6fh9v/EywT24=

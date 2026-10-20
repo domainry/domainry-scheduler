@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/domainry/domainry-foundation/telemetry"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/saashost"
 )
@@ -93,6 +94,9 @@ func New(options Options) (*Server, error) {
 func (s *Server) Routes() http.Handler { return s }
 
 func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if route := schedulerRoutePattern(request.Method, request.URL.Path); route != "" {
+		telemetry.RecordHTTPRoute(request, route)
+	}
 	// The source-owned Action adapter is safe in Module mode because Runtime's
 	// listener applies the Action permission and operation guards. Standalone
 	// SaaS has no equivalent trusted human principal contract, so it must not
@@ -407,6 +411,73 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	}
 	response.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(response).Encode(value)
+}
+
+func schedulerRoutePattern(method, path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 4 || len(parts) > 6 || parts[0] != "v1" || parts[1] != "applications" || strings.TrimSpace(parts[2]) == "" {
+		return ""
+	}
+	base := "/v1/applications/{runtime_id}/"
+	switch parts[3] {
+	case "descriptor":
+		if len(parts) == 4 && method == http.MethodGet {
+			return "GET " + base + "descriptor"
+		}
+	case "definitions":
+		if len(parts) == 4 && method == http.MethodPut {
+			return "PUT " + base + "definitions"
+		}
+		if len(parts) == 6 && parts[5] == "reschedule" && method == http.MethodPost {
+			return "POST " + base + "definitions/{definition_id}/reschedule"
+		}
+	case "plans":
+		if len(parts) == 4 && (method == http.MethodGet || method == http.MethodPost) {
+			return method + " " + base + "plans"
+		}
+		if len(parts) == 5 && (method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete) {
+			return method + " " + base + "plans/{plan_id}"
+		}
+		if len(parts) == 6 && parts[5] == "deletion-receipt" && method == http.MethodGet {
+			return "GET " + base + "plans/{plan_id}/deletion-receipt"
+		}
+		if len(parts) == 6 && (parts[5] == "pause" || parts[5] == "resume") && method == http.MethodPost {
+			return "POST " + base + "plans/{plan_id}/" + parts[5]
+		}
+	case "definition-publication-sessions":
+		if len(parts) == 4 && method == http.MethodPost {
+			return "POST " + base + "definition-publication-sessions"
+		}
+	case "preview", "ticks", "triggers":
+		if len(parts) == 4 && method == http.MethodPost {
+			return "POST " + base + parts[3]
+		}
+	case "runs":
+		if len(parts) == 4 && method == http.MethodGet {
+			return "GET " + base + "runs"
+		}
+		if len(parts) == 5 && method == http.MethodGet {
+			return "GET " + base + "runs/{run_id}"
+		}
+		if len(parts) == 6 && (parts[5] == "retry" || parts[5] == "cancel") && method == http.MethodPost {
+			return "POST " + base + "runs/{run_id}/" + parts[5]
+		}
+	case "dead-letters":
+		if len(parts) == 4 && method == http.MethodGet {
+			return "GET " + base + "dead-letters"
+		}
+		if len(parts) == 5 && method == http.MethodGet {
+			return "GET " + base + "dead-letters/{dead_letter_id}"
+		}
+		if len(parts) == 6 && (parts[5] == "resolve" || parts[5] == "requeue") && method == http.MethodPost {
+			return "POST " + base + "dead-letters/{dead_letter_id}/" + parts[5]
+		}
+	case "binding":
+		if len(parts) == 4 && method == http.MethodDelete {
+			return "DELETE " + base + "binding"
+		}
+	}
+	return ""
 }
 
 func (s *Server) authenticate(request *http.Request) (schedulersdk.ApplicationRef, bool) {
