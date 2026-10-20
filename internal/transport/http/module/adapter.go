@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/domainry/domainry-foundation/modulehttp"
+	"github.com/domainry/domainry-foundation/telemetry"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/authoring"
 	"github.com/domainry/domainry-scheduler-sdk/persistence"
@@ -584,6 +585,7 @@ func writeServiceError(w http.ResponseWriter, err error) {
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
+	telemetry.RecordHTTPStatusError(w, status, code)
 	writeJSON(w, status, map[string]any{"code": code})
 }
 
