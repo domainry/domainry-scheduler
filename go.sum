@@ -9,6 +9,8 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/domainry/domainry-foundation v0.2.10 h1:/4MsUDjhGMC11KAk6D9XGpvAlzblNO80B+ELFRdWC70=
 github.com/domainry/domainry-foundation v0.2.10/go.mod h1:nCw272N/NTkHfJNWvAGL8vZybUtOpgw3ZyCIshRSqF4=
+github.com/domainry/domainry-foundation v0.2.11 h1:QHw9fUFKFBkrzW/w6U/AyQoS9aisC1kyFgkAjPGKWQM=
+github.com/domainry/domainry-foundation v0.2.11/go.mod h1:nCw272N/NTkHfJNWvAGL8vZybUtOpgw3ZyCIshRSqF4=
 github.com/domainry/domainry-metadata-sdk v0.1.13 h1:HCr8kdQszfDWptOiynEcqSOYHmMriLOMzxyDLfBgBTQ=
 github.com/domainry/domainry-metadata-sdk v0.1.13/go.mod h1:RdpCGXDElQORIKaO4NMblNRp5ZrhhLdIRLELGqLPLJ8=
 github.com/domainry/domainry-orm v0.1.33 h1:gpCXkwDvJhJkiLMkA9awJ44KaFVtpBC6fh9v/EywT24=
