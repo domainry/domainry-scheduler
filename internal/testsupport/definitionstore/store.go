@@ -152,7 +152,7 @@ func clone(value metadatasdk.Definition) metadatasdk.Definition {
 }
 
 func conflict() error {
-	return &metadatasdk.Error{StatusCode: 409, Code: "metadata.definition_revision_conflict", Cause: fmt.Errorf("compare-and-swap lost")}
+	return &metadatasdk.Error{Kind: metadatasdk.ErrorKindConflict, Code: "metadata.definition_revision_conflict", Cause: fmt.Errorf("compare-and-swap lost")}
 }
 
 var _ metadatasdk.DefinitionStore = (*Store)(nil)

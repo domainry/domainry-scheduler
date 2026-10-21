@@ -393,7 +393,7 @@ func canonicalDefinitions(definitions []schedulersdk.Definition) ([]schedulersdk
 
 func metadataCASConflict(err error) bool {
 	var metadataErr *metadatasdk.Error
-	return errors.As(err, &metadataErr) && metadataErr.StatusCode == 409
+	return errors.As(err, &metadataErr) && metadataErr.Kind == metadatasdk.ErrorKindConflict
 }
 
 func definitionPublicationRetryable(err error) bool {
