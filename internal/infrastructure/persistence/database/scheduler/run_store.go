@@ -4,14 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/domainry/domainry-foundation/entityid"
 	"github.com/domainry/domainry-foundation/requestcontext"
 	sharedworkerscope "github.com/domainry/domainry-foundation/workerscope"
 	"github.com/domainry/domainry-orm/query"
@@ -456,10 +455,13 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 		ttl = 5 * time.Minute
 	}
 	now := time.Now().UTC()
-	id := runID(s.runtimeID, due.Definition.Key, due.ScheduledFor)
+	id, err := entityid.New("run")
+	if err != nil {
+		return schedulersdk.Run{}, false, err
+	}
 	target, _ := json.Marshal(due.Definition.Target)
 	windowKey := due.ScheduledFor.UTC().Format(time.RFC3339)
-	insert, args, err := query.NewInsertBuilder(s.dialect, "_scheduler_runs").Columns("runtime_id", "run_id", "definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "metadata_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "created_at", "updated_at").Values(s.runtimeID, id, due.Definition.Key, due.Definition.Revision, formatTime(due.ScheduledFor), windowKey, string(target), nullable(string(due.Metadata)), "leased", 1, s.workerID, formatTime(now.Add(ttl)), int64(1), formatTime(now), formatTime(now)).Build()
+	insert, args, err := query.NewInsertBuilder(s.dialect, "_scheduler_runs").Columns("run_id", "runtime_id", "definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "metadata_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "created_at", "updated_at").Values(id, s.runtimeID, due.Definition.Key, due.Definition.Revision, formatTime(due.ScheduledFor), windowKey, string(target), nullable(string(due.Metadata)), "leased", 1, s.workerID, formatTime(now.Add(ttl)), int64(1), formatTime(now), formatTime(now)).Build()
 	if err != nil {
 		return schedulersdk.Run{}, false, err
 	}
@@ -471,18 +473,18 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 	if err = s.lockTriggerCapacity(ctx, tx); err != nil {
 		return schedulersdk.Run{}, false, err
 	}
-	existingQuery, existingArgs, buildErr := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("status").Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("run_id", id))).Build()
+	existingQuery, existingArgs, buildErr := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("run_id").Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("definition_key", due.Definition.Key), query.Equal("scheduled_for", formatTime(due.ScheduledFor)))).Build()
 	if buildErr != nil {
 		return schedulersdk.Run{}, false, buildErr
 	}
-	var existingStatus string
-	if existingErr := tx.QueryRowContext(ctx, existingQuery, existingArgs...).Scan(&existingStatus); existingErr == nil {
+	var existingID string
+	if existingErr := tx.QueryRowContext(ctx, existingQuery, existingArgs...).Scan(&existingID); existingErr == nil {
 		_ = tx.Rollback()
-		run, claimed, takeErr := s.takeExpired(ctx, id, ttl, now)
+		run, claimed, takeErr := s.takeExpired(ctx, existingID, ttl, now)
 		if takeErr != nil || claimed {
 			return run, claimed, takeErr
 		}
-		run, getErr := s.get(ctx, id)
+		run, getErr := s.get(ctx, existingID)
 		return run, false, getErr
 	} else if existingErr != sql.ErrNoRows {
 		return schedulersdk.Run{}, false, existingErr
@@ -495,11 +497,15 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 			return schedulersdk.Run{}, false, err
 		}
 		_ = tx.Rollback()
-		run, claimed, takeErr := s.takeExpired(ctx, id, ttl, now)
+		existingID, lookupErr := s.runIDForWindow(ctx, s.db, due.Definition.Key, due.ScheduledFor)
+		if lookupErr != nil {
+			return schedulersdk.Run{}, false, lookupErr
+		}
+		run, claimed, takeErr := s.takeExpired(ctx, existingID, ttl, now)
 		if takeErr != nil || claimed {
 			return run, claimed, takeErr
 		}
-		run, getErr := s.get(ctx, id)
+		run, getErr := s.get(ctx, existingID)
 		return run, false, getErr
 	}
 	if !due.ExpectedCursor.IsZero() {
@@ -514,8 +520,20 @@ func (s *Store) Claim(ctx context.Context, due modulehost.DueTrigger, ttl time.D
 	if err = tx.Commit(); err != nil {
 		return schedulersdk.Run{}, false, err
 	}
-	run := schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: id, DefinitionKey: due.Definition.Key, DefinitionRev: due.Definition.Revision, ScheduledFor: parseTime(formatTime(due.ScheduledFor)), WindowKey: windowKey, Target: due.Definition.Target, IdempotencyKey: id, Attempt: 1, Metadata: append(json.RawMessage(nil), due.Metadata...)}, Lease: schedulersdk.Lease{Owner: s.workerID, Token: 1, ExpiresAt: parseTime(formatTime(now.Add(ttl)))}, Status: "leased", CreatedAt: parseTime(formatTime(now)), UpdatedAt: parseTime(formatTime(now))}
-	return run, true, nil
+	run, err := s.get(ctx, id)
+	return run, err == nil, err
+}
+
+func (s *Store) runIDForWindow(ctx context.Context, source modulehost.Queryer, definitionKey string, scheduledFor time.Time) (string, error) {
+	statement, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("run_id").Where(query.And(
+		query.Equal("runtime_id", s.runtimeID), query.Equal("definition_key", definitionKey), query.Equal("scheduled_for", formatTime(scheduledFor)),
+	)).Build()
+	if err != nil {
+		return "", err
+	}
+	var runID string
+	err = source.QueryRowContext(ctx, statement, args...).Scan(&runID)
+	return runID, err
 }
 
 func (s *Store) takeExpired(ctx context.Context, id string, ttl time.Duration, now time.Time) (schedulersdk.Run, bool, error) {
@@ -596,7 +614,7 @@ func (s *Store) Fail(ctx context.Context, run schedulersdk.Run, failure error, r
 	}
 	n, _ := result.RowsAffected()
 	if n != 1 {
-		return fmt.Errorf("Scheduler lease lost for run %s", run.Trigger.RunID)
+		return fmt.Errorf("Scheduler lease lost for run %s", run.RunID)
 	}
 	return tx.Commit()
 }
@@ -605,7 +623,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]schedulersdk.Run, error)
 	if limit <= 0 {
 		limit = 50
 	}
-	queryValue, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("run_id").Where(query.Equal("runtime_id", s.runtimeID)).OrderBy(query.Descending("created_at")).Limit(limit).Build()
+	queryValue, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("run_id").Where(query.Equal("runtime_id", s.runtimeID)).OrderBy(query.Descending("id")).Limit(limit).Build()
 	if err != nil {
 		return nil, err
 	}
@@ -830,30 +848,32 @@ func (s *Store) finish(ctx context.Context, run schedulersdk.Run, status, receip
 	}
 	n, _ := result.RowsAffected()
 	if n != 1 {
-		return fmt.Errorf("Scheduler lease lost for run %s", run.Trigger.RunID)
+		return fmt.Errorf("Scheduler lease lost for run %s", run.RunID)
 	}
 	return tx.Commit()
 }
 
 func (s *Store) get(ctx context.Context, id string) (schedulersdk.Run, error) {
-	queryValue, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "metadata_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "receipt_json", "last_error", "created_at", "updated_at").Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("run_id", id))).Build()
+	queryValue, args, err := query.NewSelectBuilder(s.dialect, "_scheduler_runs").Columns("id", "run_id", "definition_key", "definition_revision", "scheduled_for", "window_key", "target_json", "metadata_json", "status", "attempt", "lease_owner", "lease_expires_at", "fencing_token", "receipt_json", "last_error", "created_at", "updated_at").Where(query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("run_id", id))).Build()
 	if err != nil {
 		return schedulersdk.Run{}, err
 	}
-	var def, rev, window, target, status string
+	var physicalID int64
+	var runID, def, rev, window, target, status string
 	var scheduled, created, updated int64
 	var metadata, owner, receipt, last sql.NullString
 	var expires sql.NullInt64
 	var attempt int
 	var token int64
-	if err = s.db.QueryRowContext(ctx, queryValue, args...).Scan(&def, &rev, &scheduled, &window, &target, &metadata, &status, &attempt, &owner, &expires, &token, &receipt, &last, &created, &updated); err != nil {
+	if err = s.db.QueryRowContext(ctx, queryValue, args...).Scan(&physicalID, &runID, &def, &rev, &scheduled, &window, &target, &metadata, &status, &attempt, &owner, &expires, &token, &receipt, &last, &created, &updated); err != nil {
 		return schedulersdk.Run{}, err
 	}
 	var targetRef schedulersdk.TargetRef
 	_ = json.Unmarshal([]byte(target), &targetRef)
 	var rc schedulersdk.DownstreamReceipt
 	_ = json.Unmarshal([]byte(receipt.String), &rc)
-	return schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: id, DefinitionKey: def, DefinitionRev: rev, ScheduledFor: parseTime(scheduled), WindowKey: window, Target: targetRef, IdempotencyKey: id, Attempt: attempt, Metadata: json.RawMessage(metadata.String)}, Lease: schedulersdk.Lease{Owner: owner.String, Token: token, ExpiresAt: parseOptionalTime(expires)}, Status: status, DownstreamReceipt: rc, LastError: last.String, CreatedAt: parseTime(created), UpdatedAt: parseTime(updated)}, nil
+	scheduledFor := parseTime(scheduled)
+	return schedulersdk.Run{ID: physicalID, RunID: runID, Trigger: schedulersdk.Trigger{RunID: runID, DefinitionKey: def, DefinitionRev: rev, ScheduledFor: scheduledFor, WindowKey: window, Target: targetRef, IdempotencyKey: runIdempotencyKey(s.runtimeID, def, scheduledFor), Attempt: attempt, Metadata: json.RawMessage(metadata.String)}, Lease: schedulersdk.Lease{Owner: owner.String, Token: token, ExpiresAt: parseOptionalTime(expires)}, Status: status, DownstreamReceipt: rc, LastError: last.String, CreatedAt: parseTime(created), UpdatedAt: parseTime(updated)}, nil
 }
 
 func (s *Store) definition(ctx context.Context, key string) (schedulersdk.Definition, bool, error) {
@@ -906,7 +926,11 @@ func (s *Store) definitionSourceIdentity(key, sourceKind string) query.Predicate
 	return query.And(s.definitionIdentity(key), query.Equal("source_kind", sourceKind))
 }
 func (s *Store) liveLease(run schedulersdk.Run) query.Predicate {
-	return query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("run_id", run.Trigger.RunID), query.Equal("lease_owner", run.Lease.Owner), query.Equal("fencing_token", run.Lease.Token), query.Equal("status", "leased"))
+	return query.And(query.Equal("runtime_id", s.runtimeID), query.Equal("run_id", run.RunID), query.Equal("lease_owner", run.Lease.Owner), query.Equal("fencing_token", run.Lease.Token), query.Equal("status", "leased"))
+}
+func runIdempotencyKey(runtimeID, definitionKey string, scheduledFor time.Time) string {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", runtimeID, definitionKey, scheduledFor.UTC().UnixMilli())))
+	return fmt.Sprintf("sched_%x", digest[:16])
 }
 func nullable(value string) any {
 	if strings.TrimSpace(value) == "" {
@@ -941,10 +965,6 @@ func parseOptionalTime(v sql.NullInt64) time.Time {
 		return time.Time{}
 	}
 	return parseTime(v.Int64)
-}
-func runID(runtimeID, key string, scheduled time.Time) string {
-	sum := sha256.Sum256([]byte(runtimeID + "\x00" + key + "\x00" + strconv.FormatInt(formatTime(scheduled), 10)))
-	return "run_" + hex.EncodeToString(sum[:16])
 }
 func isUnique(err error) bool {
 	if err == nil {

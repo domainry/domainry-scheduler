@@ -23,10 +23,10 @@ func (b *Service) ReadScheduledPlanDeletion(ctx context.Context, lookup sdk.Sche
 	if err != nil {
 		return sdk.ScheduledPlanDeleteReceipt{}, err
 	}
-	if plan.ID != lookup.PlanID || plan.Owner != lookup.Owner || plan.Status != sdk.ScheduledPlanStatusDeleted || plan.Revision < 2 {
+	if plan.PlanID != lookup.PlanID || plan.Owner != lookup.Owner || plan.Status != sdk.ScheduledPlanStatusDeleted || plan.Revision < 2 {
 		return sdk.ScheduledPlanDeleteReceipt{}, sdk.ErrScheduledPlanNotFound
 	}
-	return sdk.ScheduledPlanDeleteReceipt{PlanID: plan.ID, Revision: plan.Revision, Deleted: true}, ctx.Err()
+	return sdk.ScheduledPlanDeleteReceipt{PlanID: plan.PlanID, Revision: plan.Revision, Deleted: true}, ctx.Err()
 }
 
 var _ sdk.ScheduledPlanDeletionReader = (*Service)(nil)

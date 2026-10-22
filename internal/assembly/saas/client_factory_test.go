@@ -97,11 +97,11 @@ func (t *transportStub) Close(context.Context, schedulersdk.ApplicationRef) erro
 	return nil
 }
 func (t *transportStub) CreateScheduledPlan(_ context.Context, _ schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanCreate) (schedulersdk.ScheduledPlanReceipt, error) {
-	t.plan = schedulersdk.ScheduledPlan{ID: "plan-remote", Name: input.Name, Owner: input.Owner}
+	t.plan = schedulersdk.ScheduledPlan{ID: 1, PlanID: "plan-remote", Name: input.Name, Owner: input.Owner}
 	return schedulersdk.ScheduledPlanReceipt{Plan: t.plan}, nil
 }
 func (t *transportStub) GetScheduledPlan(_ context.Context, _ schedulersdk.ApplicationRef, lookup schedulersdk.ScheduledPlanLookup) (schedulersdk.ScheduledPlan, error) {
-	if lookup.PlanID != t.plan.ID {
+	if lookup.PlanID != t.plan.PlanID {
 		return schedulersdk.ScheduledPlan{}, schedulersdk.ErrScheduledPlanNotFound
 	}
 	return t.plan, nil
@@ -144,11 +144,11 @@ func TestSaaSBindingPublishesRuntimeDefinitionSnapshot(t *testing.T) {
 	plans := binding.(schedulersdk.ScheduledPlanService)
 	owner := schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-a", ProductKey: "agent"}
 	receipt, err := plans.CreateScheduledPlan(t.Context(), schedulersdk.ScheduledPlanCreate{Name: "remote", Owner: owner})
-	if err != nil || receipt.Plan.ID != "plan-remote" {
+	if err != nil || receipt.Plan.PlanID != "plan-remote" {
 		t.Fatalf("plan receipt=%+v err=%v", receipt, err)
 	}
 	loaded, err := plans.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: "plan-remote"})
-	if err != nil || loaded.ID != "plan-remote" {
+	if err != nil || loaded.PlanID != "plan-remote" {
 		t.Fatalf("loaded=%+v err=%v", loaded, err)
 	}
 	if err := binding.Close(t.Context()); err != nil || transport.closes != 0 {

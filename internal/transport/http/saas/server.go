@@ -180,7 +180,12 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		}
 		if len(parts) == 4 && request.Method == http.MethodGet {
 			limit, limitErr := strconv.Atoi(request.URL.Query().Get("limit"))
+			cursor, cursorErr := strconv.ParseInt(request.URL.Query().Get("cursor"), 10, 64)
 			if request.URL.Query().Get("limit") != "" && limitErr != nil {
+				err = schedulersdk.ErrScheduledPlanInvalid
+				break
+			}
+			if request.URL.Query().Get("cursor") != "" && cursorErr != nil {
 				err = schedulersdk.ErrScheduledPlanInvalid
 				break
 			}
@@ -188,7 +193,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 				Owner: schedulersdk.ScheduledPlanOwner{
 					WorkspaceID: request.URL.Query().Get("workspace_id"), UserID: request.URL.Query().Get("user_id"), ProductKey: request.URL.Query().Get("product_key"),
 				},
-				Status: request.URL.Query().Get("status"), Cursor: request.URL.Query().Get("cursor"), Limit: limit,
+				Status: request.URL.Query().Get("status"), Cursor: cursor, Limit: limit,
 			})
 			break
 		}

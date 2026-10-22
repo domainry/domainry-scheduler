@@ -11,7 +11,7 @@ import (
 
 func TestReadScheduledPlanDeletionUsesOnlyOwnedTombstone(t *testing.T) {
 	owner := sdk.ScheduledPlanOwner{WorkspaceID: "workspace", UserID: "user", ProductKey: "agent"}
-	repo := &scheduledPlanRepositoryStub{record: persistence.ScheduledPlanRecord{Plan: sdk.ScheduledPlan{ID: "plan", Owner: owner, Status: sdk.ScheduledPlanStatusDeleted, Revision: 4}}}
+	repo := &scheduledPlanRepositoryStub{record: persistence.ScheduledPlanRecord{Plan: sdk.ScheduledPlan{ID: 1, PlanID: "plan", Owner: owner, Status: sdk.ScheduledPlanStatusDeleted, Revision: 4}}}
 	// No clock, definition repository, dispatcher or projection host is installed.
 	service := &Service{planRepository: repo}
 	lookup := sdk.ScheduledPlanLookup{Owner: owner, PlanID: "plan"}

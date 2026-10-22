@@ -35,13 +35,13 @@ func TestScheduledPlanStorePersistsOwnerScopeAndIdempotencyAcrossReopen(t *testi
 	record := schedulerpersistence.ScheduledPlanRecord{
 		ClientID: "client-once", RequestSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Plan: schedulersdk.ScheduledPlan{
-			ID: "plan-once", Name: "周五提醒", Owner: owner, Timezone: "Asia/Shanghai", Trigger: schedulersdk.ScheduledPlanTrigger{Type: schedulersdk.ScheduledPlanTriggerOnce, At: &at},
+			PlanID: "plan-once", Name: "周五提醒", Owner: owner, Timezone: "Asia/Shanghai", Trigger: schedulersdk.ScheduledPlanTrigger{Type: schedulersdk.ScheduledPlanTriggerOnce, At: &at},
 			Input: json.RawMessage(`{"todo_status":"open"}`), AllowedActions: []string{"todo.list"}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"},
 			ConversationRef: schedulersdk.ScheduledPlanConversationRef{ConversationID: "conversation-a", RunID: "run-a"}, Status: "enabled", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 		},
 	}
 	created, replay, err := store.CreateScheduledPlan(t.Context(), record)
-	if err != nil || replay || created.ID != record.Plan.ID {
+	if err != nil || replay || created.ID <= 0 || created.PlanID != record.Plan.PlanID {
 		t.Fatalf("created=%+v replay=%t err=%v", created, replay, err)
 	}
 	created, replay, err = store.CreateScheduledPlan(t.Context(), record)
@@ -57,25 +57,25 @@ func TestScheduledPlanStorePersistsOwnerScopeAndIdempotencyAcrossReopen(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := reopened.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: record.Plan.ID})
+	loaded, err := reopened.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: record.Plan.PlanID})
 	if err != nil || loaded.Name != record.Plan.Name || string(loaded.Input) != string(record.Plan.Input) || len(loaded.AllowedActions) != 1 {
 		t.Fatalf("loaded=%+v err=%v", loaded, err)
 	}
-	recovery, err := reopened.ListScheduledPlansForRecovery(t.Context(), "", 1)
-	if err != nil || len(recovery) != 1 || recovery[0].ID != record.Plan.ID {
+	recovery, err := reopened.ListScheduledPlansForRecovery(t.Context(), 0, 1)
+	if err != nil || len(recovery) != 1 || recovery[0].PlanID != record.Plan.PlanID {
 		t.Fatalf("recovery=%+v err=%v", recovery, err)
 	}
-	recovery, err = reopened.ListScheduledPlansForRecovery(t.Context(), record.Plan.ID, 1)
+	recovery, err = reopened.ListScheduledPlansForRecovery(t.Context(), created.ID, 1)
 	if err != nil || len(recovery) != 0 {
 		t.Fatalf("recovery after cursor=%+v err=%v", recovery, err)
 	}
 	other := owner
 	other.UserID = "user-b"
-	if _, err := reopened.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: other, PlanID: record.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+	if _, err := reopened.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: other, PlanID: record.Plan.PlanID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
 		t.Fatalf("cross-user lookup err=%v", err)
 	}
 	var rows int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_schedules WHERE runtime_id = ? AND source_id = ? AND kind = 'scheduled_plan'`, "runtime-a", record.Plan.ID).Scan(&rows); err != nil || rows != 1 {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_plans WHERE runtime_id = ? AND plan_id = ?`, "runtime-a", record.Plan.PlanID).Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("rows=%d err=%v", rows, err)
 	}
 }
@@ -92,7 +92,7 @@ func TestScheduledPlanStoreConcurrentExactCreateWritesOneRecord(t *testing.T) {
 	dialect, _ := Renderer("sqlite", "")
 	store, _ := NewScheduledPlanStore(db, dialect, "runtime-a")
 	record := schedulerpersistence.ScheduledPlanRecord{ClientID: "same", RequestSHA256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Plan: schedulersdk.ScheduledPlan{
-		ID: "plan-same", Name: "same", Owner: schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-a", ProductKey: "agent"}, Timezone: "UTC",
+		PlanID: "plan-same", Name: "same", Owner: schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-a", ProductKey: "agent"}, Timezone: "UTC",
 		Trigger: schedulersdk.ScheduledPlanTrigger{Type: "recurring", Schedule: &schedulersdk.Schedule{Type: "interval", IntervalSeconds: 60, Timezone: "UTC"}}, Input: json.RawMessage(`{}`),
 		AllowedActions: []string{}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"}, Status: "enabled", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}}
@@ -115,7 +115,7 @@ func TestScheduledPlanStoreConcurrentExactCreateWritesOneRecord(t *testing.T) {
 		}
 	}
 	var rows int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_schedules WHERE kind = 'scheduled_plan'`).Scan(&rows); err != nil || rows != 1 {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_plans`).Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("rows=%d err=%v", rows, err)
 	}
 }

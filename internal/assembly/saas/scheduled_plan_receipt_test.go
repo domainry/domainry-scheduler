@@ -41,11 +41,11 @@ func TestDeletionReceiptHTTPReadsDurableTombstoneAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lookup := sdk.ScheduledPlanLookup{Owner: owner, PlanID: created.Plan.ID}
+	lookup := sdk.ScheduledPlanLookup{Owner: owner, PlanID: created.Plan.PlanID}
 	if _, err := client.ReadScheduledPlanDeletion(t.Context(), app, lookup); !errors.Is(err, sdk.ErrScheduledPlanNotFound) {
 		t.Fatal("live plan treated as deleted", err)
 	}
-	deleted, err := client.DeleteScheduledPlan(t.Context(), app, sdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.ID, ExpectedRevision: 1})
+	deleted, err := client.DeleteScheduledPlan(t.Context(), app, sdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.PlanID, ExpectedRevision: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

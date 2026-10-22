@@ -156,7 +156,7 @@ func (a *adapter) withCommandReceipt(actionKey string, next http.HandlerFunc) ht
 		next(buffer, r)
 		completeCtx, cancelComplete := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 		defer cancelComplete()
-		if err := a.receipts.CompleteCommand(completeCtx, idempotencyKey, requestHash, buffer.status, buffer.body.Bytes()); err != nil {
+		if err := a.receipts.CompleteCommand(completeCtx, receipt, buffer.status, buffer.body.Bytes()); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "backend.scheduler.idempotency_unavailable")
 			return
 		}
@@ -365,8 +365,8 @@ func (a *adapter) getState(w http.ResponseWriter, r *http.Request) {
 
 func (a *adapter) runDefinition(w http.ResponseWriter, r *http.Request) {
 	run, err := a.binding.TriggerNow(r.Context(), strings.TrimSpace(r.PathValue("definitionID")), operationReason(r))
-	if err == nil && strings.TrimSpace(run.Trigger.RunID) != "" {
-		if current, getErr := a.binding.Run(r.Context(), run.Trigger.RunID); getErr == nil {
+	if err == nil && strings.TrimSpace(run.RunID) != "" {
+		if current, getErr := a.binding.Run(r.Context(), run.RunID); getErr == nil {
 			run = current
 		}
 	}
@@ -469,7 +469,8 @@ func projectTarget(value schedulersdk.TargetRef) (string, string) {
 }
 
 type runResponse struct {
-	ID                string                     `json:"id"`
+	ID                int64                      `json:"id"`
+	RunID             string                     `json:"run_id"`
 	DefinitionKey     string                     `json:"definition_key,omitempty"`
 	Status            string                     `json:"status"`
 	Attempt           int                        `json:"attempt,omitempty"`
@@ -493,7 +494,7 @@ type downstreamReceiptResponse struct {
 }
 
 func projectRun(value schedulersdk.Run) runResponse {
-	return runResponse{ID: value.Trigger.RunID, DefinitionKey: value.Trigger.DefinitionKey, Status: value.Status,
+	return runResponse{ID: value.ID, RunID: value.RunID, DefinitionKey: value.Trigger.DefinitionKey, Status: value.Status,
 		Attempt: value.Trigger.Attempt, ScheduledFor: formatTime(value.Trigger.ScheduledFor), WindowKey: value.Trigger.WindowKey, ErrorMessage: value.LastError,
 		LeaseOwner: value.Lease.Owner, LeaseExpiresAt: formatTime(value.Lease.ExpiresAt), FencingToken: value.Lease.Token,
 		CorrelationID: value.DownstreamReceipt.ID, DownstreamReceipt: projectDownstreamReceipt(value.DownstreamReceipt), CreatedAt: formatTime(value.CreatedAt), UpdatedAt: formatTime(value.UpdatedAt)}
@@ -507,7 +508,6 @@ func projectDownstreamReceipt(value schedulersdk.DownstreamReceipt) *downstreamR
 }
 
 type deadLetterResponse struct {
-	ID            string `json:"id"`
 	RunID         string `json:"run_id"`
 	DefinitionKey string `json:"definition_key,omitempty"`
 	Status        string `json:"status"`
@@ -517,7 +517,7 @@ type deadLetterResponse struct {
 }
 
 func projectDeadLetter(value schedulersdk.DeadLetter) deadLetterResponse {
-	return deadLetterResponse{ID: value.RunID, RunID: value.RunID, DefinitionKey: value.DefinitionKey, Status: value.Status,
+	return deadLetterResponse{RunID: value.RunID, DefinitionKey: value.DefinitionKey, Status: value.Status,
 		Reason: value.Reason, FailedAt: formatTime(value.FailedAt), ResolvedAt: formatTime(value.ResolvedAt)}
 }
 

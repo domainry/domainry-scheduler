@@ -11,6 +11,7 @@ const (
 // externally invoked management command. A receipt is claimed before the
 // command runs and completed before its HTTP response is returned.
 type CommandReceipt struct {
+	OperationID    string
 	IdempotencyKey string
 	ActionKey      string
 	ResourceKey    string
@@ -22,5 +23,5 @@ type CommandReceipt struct {
 
 type CommandReceiptStore interface {
 	ClaimCommand(context.Context, CommandReceipt) (CommandReceipt, bool, error)
-	CompleteCommand(context.Context, string, string, int, []byte) error
+	CompleteCommand(context.Context, CommandReceipt, int, []byte) error
 }

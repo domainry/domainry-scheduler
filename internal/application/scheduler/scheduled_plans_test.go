@@ -16,29 +16,30 @@ type scheduledPlanRepositoryStub struct {
 }
 
 func (s *scheduledPlanRepositoryStub) CreateScheduledPlan(_ context.Context, record schedulerpersistence.ScheduledPlanRecord) (schedulersdk.ScheduledPlan, bool, error) {
-	if s.record.Plan.ID != "" {
+	if s.record.Plan.PlanID != "" {
 		if s.record.RequestSHA256 != record.RequestSHA256 {
 			return schedulersdk.ScheduledPlan{}, false, schedulersdk.ErrScheduledPlanConflict
 		}
 		return s.record.Plan, true, nil
 	}
+	record.Plan.ID = 1
 	s.record = record
 	return record.Plan, false, nil
 }
 func (s *scheduledPlanRepositoryStub) GetScheduledPlan(_ context.Context, lookup schedulersdk.ScheduledPlanLookup) (schedulersdk.ScheduledPlan, error) {
-	if s.record.Plan.ID != lookup.PlanID || s.record.Plan.Owner != lookup.Owner {
+	if s.record.Plan.PlanID != lookup.PlanID || s.record.Plan.Owner != lookup.Owner {
 		return schedulersdk.ScheduledPlan{}, schedulersdk.ErrScheduledPlanNotFound
 	}
 	return s.record.Plan, nil
 }
 func (s *scheduledPlanRepositoryStub) ListScheduledPlans(_ context.Context, input schedulersdk.ScheduledPlanList) (schedulersdk.ScheduledPlanPage, error) {
-	if s.record.Plan.ID == "" || s.record.Plan.Owner != input.Owner || s.record.Plan.Status == schedulersdk.ScheduledPlanStatusDeleted || input.Status != "" && input.Status != s.record.Plan.Status {
+	if s.record.Plan.PlanID == "" || s.record.Plan.Owner != input.Owner || s.record.Plan.Status == schedulersdk.ScheduledPlanStatusDeleted || input.Status != "" && input.Status != s.record.Plan.Status {
 		return schedulersdk.ScheduledPlanPage{Items: []schedulersdk.ScheduledPlan{}}, nil
 	}
 	return schedulersdk.ScheduledPlanPage{Items: []schedulersdk.ScheduledPlan{s.record.Plan}}, nil
 }
 func (s *scheduledPlanRepositoryStub) ReplaceScheduledPlan(_ context.Context, plan schedulersdk.ScheduledPlan, expectedRevision int64) (schedulersdk.ScheduledPlan, error) {
-	if s.record.Plan.ID != plan.ID || s.record.Plan.Owner != plan.Owner {
+	if s.record.Plan.PlanID != plan.PlanID || s.record.Plan.Owner != plan.Owner {
 		return schedulersdk.ScheduledPlan{}, schedulersdk.ErrScheduledPlanNotFound
 	}
 	if s.record.Plan.Revision != expectedRevision {
@@ -67,7 +68,7 @@ func TestCreateScheduledPlanNormalizesAndReplaysExactOwnerCommand(t *testing.T) 
 		t.Fatalf("first=%+v err=%v", first, err)
 	}
 	second, err := service.CreateScheduledPlan(t.Context(), input)
-	if err != nil || !second.Replay || second.Plan.ID != first.Plan.ID {
+	if err != nil || !second.Replay || second.Plan.PlanID != first.Plan.PlanID {
 		t.Fatalf("second=%+v err=%v", second, err)
 	}
 	plan := first.Plan
@@ -83,11 +84,11 @@ func TestCreateScheduledPlanNormalizesAndReplaysExactOwnerCommand(t *testing.T) 
 	if _, err := service.CreateScheduledPlan(t.Context(), duplicateAfterNormalization); !errors.Is(err, schedulersdk.ErrScheduledPlanInvalid) {
 		t.Fatalf("normalized duplicate actions err=%v", err)
 	}
-	loaded, err := service.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: input.Owner, PlanID: plan.ID})
-	if err != nil || loaded.ID != plan.ID {
+	loaded, err := service.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: input.Owner, PlanID: plan.PlanID})
+	if err != nil || loaded.PlanID != plan.PlanID {
 		t.Fatalf("loaded=%+v err=%v", loaded, err)
 	}
-	_, err = service.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-b", ProductKey: "agent"}, PlanID: plan.ID})
+	_, err = service.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-b", ProductKey: "agent"}, PlanID: plan.PlanID})
 	if !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
 		t.Fatalf("cross-user read err=%v", err)
 	}
@@ -111,65 +112,65 @@ func TestScheduledPlanManagementUsesOwnerScopeRevisionCASAndDeletedTombstone(t *
 		t.Fatal(err)
 	}
 	page, err := service.ListScheduledPlans(t.Context(), schedulersdk.ScheduledPlanList{Owner: owner, Limit: 1})
-	if err != nil || len(page.Items) != 1 || page.Items[0].ID != created.Plan.ID {
+	if err != nil || len(page.Items) != 1 || page.Items[0].PlanID != created.Plan.PlanID {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
 	updated, err := service.UpdateScheduledPlan(t.Context(), schedulersdk.ScheduledPlanUpdate{
-		Owner: owner, PlanID: created.Plan.ID, ExpectedRevision: 1, Name: "每周二整理待办", Timezone: "Asia/Shanghai",
+		Owner: owner, PlanID: created.Plan.PlanID, ExpectedRevision: 1, Name: "每周二整理待办", Timezone: "Asia/Shanghai",
 		Trigger: schedulersdk.ScheduledPlanTrigger{Type: schedulersdk.ScheduledPlanTriggerRecurring, Schedule: &schedulersdk.Schedule{Type: "weekly_at", TimeOfDay: "10:30", DayOfWeek: "tuesday", Timezone: "Asia/Shanghai"}},
 		Input:   created.Plan.Input, AllowedActions: created.Plan.AllowedActions, Target: created.Plan.Target, ConversationRef: created.Plan.ConversationRef,
 	})
 	if err != nil || updated.Plan.Revision != 2 || updated.Plan.Name != "每周二整理待办" || updated.Plan.Trigger.Schedule.DayOfWeek != "tuesday" {
 		t.Fatalf("updated=%+v err=%v", updated, err)
 	}
-	if _, err := service.UpdateScheduledPlan(t.Context(), schedulersdk.ScheduledPlanUpdate{Owner: owner, PlanID: created.Plan.ID, ExpectedRevision: 1, Name: "stale", Timezone: updated.Plan.Timezone, Trigger: updated.Plan.Trigger, Input: updated.Plan.Input, AllowedActions: updated.Plan.AllowedActions, Target: updated.Plan.Target, ConversationRef: updated.Plan.ConversationRef}); !errors.Is(err, schedulersdk.ErrScheduledPlanConflict) {
+	if _, err := service.UpdateScheduledPlan(t.Context(), schedulersdk.ScheduledPlanUpdate{Owner: owner, PlanID: created.Plan.PlanID, ExpectedRevision: 1, Name: "stale", Timezone: updated.Plan.Timezone, Trigger: updated.Plan.Trigger, Input: updated.Plan.Input, AllowedActions: updated.Plan.AllowedActions, Target: updated.Plan.Target, ConversationRef: updated.Plan.ConversationRef}); !errors.Is(err, schedulersdk.ErrScheduledPlanConflict) {
 		t.Fatalf("stale update err=%v", err)
 	}
-	paused, err := service.PauseScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.ID, ExpectedRevision: 2})
+	paused, err := service.PauseScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.PlanID, ExpectedRevision: 2})
 	if err != nil || paused.Plan.Status != schedulersdk.ScheduledPlanStatusPaused || paused.Plan.Revision != 3 {
 		t.Fatalf("paused=%+v err=%v", paused, err)
 	}
 	if runs.planEnabled || runs.planDefinition.Status != schedulersdk.ScheduledPlanStatusPaused || runs.planDefinition.Revision != "3" {
 		t.Fatalf("paused projection enabled=%v definition=%+v", runs.planEnabled, runs.planDefinition)
 	}
-	pauseReplay, err := service.PauseScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.ID, ExpectedRevision: 2})
+	pauseReplay, err := service.PauseScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.PlanID, ExpectedRevision: 2})
 	if err != nil || !pauseReplay.Replay || pauseReplay.Plan.Revision != 3 {
 		t.Fatalf("pause replay=%+v err=%v", pauseReplay, err)
 	}
-	resumed, err := service.ResumeScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.ID, ExpectedRevision: 3})
+	resumed, err := service.ResumeScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.PlanID, ExpectedRevision: 3})
 	if err != nil || resumed.Plan.Status != schedulersdk.ScheduledPlanStatusEnabled || resumed.Plan.Revision != 4 {
 		t.Fatalf("resumed=%+v err=%v", resumed, err)
 	}
 	if !runs.planEnabled || runs.planDefinition.Status != schedulersdk.ScheduledPlanStatusEnabled || runs.planDefinition.Revision != "4" || !runs.planNext.After(resumed.Plan.UpdatedAt) {
 		t.Fatalf("resumed projection enabled=%v next=%s plan=%+v definition=%+v", runs.planEnabled, runs.planNext, resumed.Plan, runs.planDefinition)
 	}
-	deleted, err := service.DeleteScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.ID, ExpectedRevision: 4})
+	deleted, err := service.DeleteScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.PlanID, ExpectedRevision: 4})
 	if err != nil || !deleted.Deleted || deleted.Revision != 5 {
 		t.Fatalf("deleted=%+v err=%v", deleted, err)
 	}
 	if runs.planEnabled || runs.planDefinition.Status != schedulersdk.ScheduledPlanStatusDeleted || runs.planDefinition.Revision != "5" {
 		t.Fatalf("deleted projection enabled=%v definition=%+v", runs.planEnabled, runs.planDefinition)
 	}
-	deleteReplay, err := service.DeleteScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.ID, ExpectedRevision: 4})
+	deleteReplay, err := service.DeleteScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: owner, PlanID: created.Plan.PlanID, ExpectedRevision: 4})
 	if err != nil || !deleteReplay.Replay || deleteReplay.Revision != 5 {
 		t.Fatalf("delete replay=%+v err=%v", deleteReplay, err)
 	}
-	if _, err := service.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: created.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+	if _, err := service.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: created.Plan.PlanID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
 		t.Fatalf("deleted get err=%v", err)
 	}
 	page, err = service.ListScheduledPlans(t.Context(), schedulersdk.ScheduledPlanList{Owner: owner})
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("deleted page=%+v err=%v", page, err)
 	}
-	if _, err := service.PauseScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "other", ProductKey: "agent"}, PlanID: created.Plan.ID, ExpectedRevision: 4}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+	if _, err := service.PauseScheduledPlan(t.Context(), schedulersdk.ScheduledPlanStatusChange{Owner: schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "other", ProductKey: "agent"}, PlanID: created.Plan.PlanID, ExpectedRevision: 4}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
 		t.Fatalf("cross-owner pause err=%v", err)
 	}
 }
 
 var _ schedulerpersistence.ScheduledPlanRepository = (*scheduledPlanRepositoryStub)(nil)
 
-func (s *scheduledPlanRepositoryStub) ListScheduledPlansForRecovery(context.Context, string, int) ([]schedulersdk.ScheduledPlan, error) {
-	if s.record.Plan.ID == "" {
+func (s *scheduledPlanRepositoryStub) ListScheduledPlansForRecovery(context.Context, int64, int) ([]schedulersdk.ScheduledPlan, error) {
+	if s.record.Plan.PlanID == "" {
 		return nil, nil
 	}
 	return []schedulersdk.ScheduledPlan{s.record.Plan}, nil

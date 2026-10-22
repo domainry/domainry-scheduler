@@ -206,8 +206,8 @@ func TestModuleScheduledPlansPersistOneTimeAndRecurringRecordsAcrossRestart(t *t
 	defer second.Close(t.Context())
 	reopened := second.(schedulersdk.ScheduledPlanService)
 	for index, receipt := range receipts {
-		loaded, getErr := reopened.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: receipt.Plan.ID})
-		if getErr != nil || loaded.ID != receipt.Plan.ID || loaded.Trigger.Type != inputs[index].Trigger.Type || loaded.Timezone != "Asia/Shanghai" || loaded.ConversationRef.ConversationID != "conversation-a" {
+		loaded, getErr := reopened.GetScheduledPlan(t.Context(), schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: receipt.Plan.PlanID})
+		if getErr != nil || loaded.PlanID != receipt.Plan.PlanID || loaded.Trigger.Type != inputs[index].Trigger.Type || loaded.Timezone != "Asia/Shanghai" || loaded.ConversationRef.ConversationID != "conversation-a" {
 			t.Fatalf("index=%d loaded=%+v err=%v", index, loaded, getErr)
 		}
 	}
@@ -256,7 +256,7 @@ func TestModuleScheduledPlanClockDispatchesOnceAndRestartDoesNotDuplicate(t *tes
 		t.Fatal("Module plan clock did not dispatch")
 	}
 	var payload schedulersdk.ScheduledPlanDispatch
-	if err := json.Unmarshal(trigger.Target.Payload, &payload); err != nil || payload.PlanID != receipt.Plan.ID || payload.Owner != owner || string(payload.Input) != `{"goal":"提醒一次"}` {
+	if err := json.Unmarshal(trigger.Target.Payload, &payload); err != nil || payload.PlanID != receipt.Plan.PlanID || payload.Owner != owner || string(payload.Input) != `{"goal":"提醒一次"}` {
 		t.Fatalf("payload=%+v raw=%s err=%v", payload, trigger.Target.Payload, err)
 	}
 	cancelFirst()
@@ -277,7 +277,7 @@ func TestModuleScheduledPlanClockDispatchesOnceAndRestartDoesNotDuplicate(t *tes
 	case <-time.After(75 * time.Millisecond):
 	}
 	var runs int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_runs WHERE runtime_id = ? AND definition_key = ?`, application.RuntimeID, "scheduled-plan:"+receipt.Plan.ID).Scan(&runs); err != nil || runs != 1 {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_runs WHERE runtime_id = ? AND definition_key = ?`, application.RuntimeID, "scheduled-plan:"+receipt.Plan.PlanID).Scan(&runs); err != nil || runs != 1 {
 		t.Fatalf("runs=%d err=%v", runs, err)
 	}
 }

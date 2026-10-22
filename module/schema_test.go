@@ -13,7 +13,7 @@ func TestModulePublishesSchedulerOwnedSchema(t *testing.T) {
 	if err := schemaownership.ValidateAll(tables); err != nil {
 		t.Fatal(err)
 	}
-	if len(tables) != 2 || !slices.Equal(OwnedTables(), schemaownership.Names(tables)) {
+	if len(tables) != 3 || !slices.Equal(OwnedTables(), schemaownership.Names(tables)) {
 		t.Fatalf("Scheduler schema ownership=%d tables=%v", len(tables), OwnedTables())
 	}
 }

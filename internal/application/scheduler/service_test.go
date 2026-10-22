@@ -436,7 +436,7 @@ func (h *hostStub) Due(context.Context, time.Time, int) ([]modulehost.DueTrigger
 func (h *hostStub) Claim(_ context.Context, due modulehost.DueTrigger, ttl time.Duration) (schedulersdk.Run, bool, error) {
 	h.lastClaim = due
 	windowKey := due.ScheduledFor.UTC().Format(time.RFC3339)
-	run := schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: due.Definition.Key, DefinitionRev: due.Definition.Revision, ScheduledFor: due.ScheduledFor, WindowKey: windowKey, Target: due.Definition.Target, IdempotencyKey: "scheduler:daily:window", Attempt: 1, Metadata: append(json.RawMessage(nil), due.Metadata...)}, Status: "leased"}
+	run := schedulersdk.Run{RunID: "run-1", Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: due.Definition.Key, DefinitionRev: due.Definition.Revision, ScheduledFor: due.ScheduledFor, WindowKey: windowKey, Target: due.Definition.Target, IdempotencyKey: "scheduler:daily:window", Attempt: 1, Metadata: append(json.RawMessage(nil), due.Metadata...)}, Status: "leased"}
 	if h.lease {
 		run.Lease = schedulersdk.Lease{Owner: "worker-a", Token: 1, ExpiresAt: time.Now().Add(ttl)}
 	}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/domainry/domainry-foundation/entityid"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	schedulerpersistence "github.com/domainry/domainry-scheduler-sdk/persistence"
 	"github.com/domainry/domainry-scheduler-sdk/schedule"
@@ -48,8 +49,12 @@ func (b *Service) CreateScheduledPlan(ctx context.Context, input schedulersdk.Sc
 	}
 	digest := sha256.Sum256(request)
 	now := b.now().UTC()
+	planID, err := entityid.New("plan")
+	if err != nil {
+		return schedulersdk.ScheduledPlanReceipt{}, err
+	}
 	plan := schedulersdk.ScheduledPlan{
-		ID: scheduledPlanID(b.application.RuntimeID, normalized.Owner, normalized.ClientID), Name: normalized.Name,
+		PlanID: planID, Name: normalized.Name,
 		Owner: normalized.Owner, Timezone: normalized.Timezone, Trigger: normalized.Trigger, Input: normalized.Input,
 		AllowedActions: normalized.AllowedActions, Target: normalized.Target, ConversationRef: normalized.ConversationRef,
 		Status: normalized.Status, Revision: 1, CreatedAt: now, UpdatedAt: now,
@@ -90,14 +95,14 @@ func (b *Service) ListScheduledPlans(ctx context.Context, input schedulersdk.Sch
 		return schedulersdk.ScheduledPlanPage{}, fmt.Errorf("Scheduler plan repository is unavailable")
 	}
 	input.Owner = normalizeScheduledPlanOwner(input.Owner)
-	input.Status, input.Cursor = strings.TrimSpace(input.Status), strings.TrimSpace(input.Cursor)
+	input.Status = strings.TrimSpace(input.Status)
 	if err := input.Owner.Validate(); err != nil {
 		return schedulersdk.ScheduledPlanPage{}, err
 	}
 	if input.Limit < 0 || input.Limit > 100 {
 		return schedulersdk.ScheduledPlanPage{}, fmt.Errorf("%w: list limit must be between 1 and 100 when set", schedulersdk.ErrScheduledPlanInvalid)
 	}
-	if input.Cursor != "" && !scheduledPlanManagementKey(input.Cursor) {
+	if input.Cursor < 0 {
 		return schedulersdk.ScheduledPlanPage{}, fmt.Errorf("%w: list cursor is invalid", schedulersdk.ErrScheduledPlanInvalid)
 	}
 	switch input.Status {
@@ -128,7 +133,7 @@ func (b *Service) UpdateScheduledPlan(ctx context.Context, input schedulersdk.Sc
 		return schedulersdk.ScheduledPlanReceipt{}, err
 	}
 	desired := schedulersdk.ScheduledPlan{
-		ID: current.ID, Name: normalized.Name, Owner: current.Owner, Timezone: normalized.Timezone,
+		ID: current.ID, PlanID: current.PlanID, Name: normalized.Name, Owner: current.Owner, Timezone: normalized.Timezone,
 		Trigger: normalized.Trigger, Input: normalized.Input, AllowedActions: normalized.AllowedActions,
 		Target: normalized.Target, ConversationRef: normalized.ConversationRef, Status: current.Status,
 		Revision: input.ExpectedRevision + 1, CreatedAt: current.CreatedAt,
@@ -178,7 +183,7 @@ func (b *Service) DeleteScheduledPlan(ctx context.Context, input schedulersdk.Sc
 			if err := b.projectScheduledPlan(ctx, current); err != nil {
 				return schedulersdk.ScheduledPlanDeleteReceipt{}, err
 			}
-			return schedulersdk.ScheduledPlanDeleteReceipt{PlanID: current.ID, Revision: current.Revision, Deleted: true, Replay: true}, nil
+			return schedulersdk.ScheduledPlanDeleteReceipt{PlanID: current.PlanID, Revision: current.Revision, Deleted: true, Replay: true}, nil
 		}
 		return schedulersdk.ScheduledPlanDeleteReceipt{}, schedulersdk.ErrScheduledPlanNotFound
 	}
@@ -194,7 +199,7 @@ func (b *Service) DeleteScheduledPlan(ctx context.Context, input schedulersdk.Sc
 	if err := b.projectScheduledPlan(ctx, stored); err != nil {
 		return schedulersdk.ScheduledPlanDeleteReceipt{}, err
 	}
-	return schedulersdk.ScheduledPlanDeleteReceipt{PlanID: stored.ID, Revision: stored.Revision, Deleted: true}, nil
+	return schedulersdk.ScheduledPlanDeleteReceipt{PlanID: stored.PlanID, Revision: stored.Revision, Deleted: true}, nil
 }
 
 func (b *Service) changeScheduledPlanStatus(ctx context.Context, input schedulersdk.ScheduledPlanStatusChange, desiredStatus string) (schedulersdk.ScheduledPlanReceipt, error) {
@@ -333,7 +338,7 @@ func (b *Service) hydrateScheduledPlans(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	found := false
-	after := ""
+	var after int64
 	for {
 		plans, err := b.planRecovery.ListScheduledPlansForRecovery(ctx, after, 200)
 		if err != nil {
@@ -363,7 +368,7 @@ func (b *Service) projectScheduledPlan(ctx context.Context, plan schedulersdk.Sc
 	}
 	dispatch := schedulersdk.ScheduledPlanDispatch{
 		ContractVersion: schedulersdk.ScheduledPlanDispatchContractVersion,
-		PlanID:          plan.ID, Owner: plan.Owner, Input: append(json.RawMessage(nil), plan.Input...),
+		PlanID:          plan.PlanID, Owner: plan.Owner, Input: append(json.RawMessage(nil), plan.Input...),
 		AllowedActions: append([]string(nil), plan.AllowedActions...), ConversationRef: plan.ConversationRef,
 	}
 	payload, err := json.Marshal(dispatch)
@@ -373,20 +378,20 @@ func (b *Service) projectScheduledPlan(ctx context.Context, plan schedulersdk.Sc
 	target := plan.Target.Normalize()
 	target.Payload = payload
 	definition := schedulersdk.Definition{
-		Key: scheduledPlanDefinitionPrefix + plan.ID, Name: plan.Name, Status: plan.Status,
+		Key: scheduledPlanDefinitionPrefix + plan.PlanID, Name: plan.Name, Status: plan.Status,
 		Revision: strconv.FormatInt(plan.Revision, 10), Target: target, Policy: normalizeScheduledPlanPolicy(plan.Trigger.Type, plan.Trigger.Policy),
 	}
 	var next time.Time
 	switch plan.Trigger.Type {
 	case schedulersdk.ScheduledPlanTriggerOnce:
 		if plan.Trigger.At == nil {
-			return fmt.Errorf("project scheduled plan %s: missing one-time instant", plan.ID)
+			return fmt.Errorf("project scheduled plan %s: missing one-time instant", plan.PlanID)
 		}
 		next = plan.Trigger.At.UTC()
 		definition.Schedule = schedulersdk.Schedule{Type: "once", Expression: next.Format(time.RFC3339Nano), Timezone: plan.Timezone}
 	case schedulersdk.ScheduledPlanTriggerRecurring:
 		if plan.Trigger.Schedule == nil {
-			return fmt.Errorf("project scheduled plan %s: missing recurring schedule", plan.ID)
+			return fmt.Errorf("project scheduled plan %s: missing recurring schedule", plan.PlanID)
 		}
 		definition.Schedule = *plan.Trigger.Schedule
 		anchor := plan.CreatedAt.UTC()
@@ -395,11 +400,11 @@ func (b *Service) projectScheduledPlan(ctx context.Context, plan schedulersdk.Sc
 		}
 		next = schedule.NextSchedule(definition.Schedule, anchor)
 	default:
-		return fmt.Errorf("project scheduled plan %s: invalid trigger type", plan.ID)
+		return fmt.Errorf("project scheduled plan %s: invalid trigger type", plan.PlanID)
 	}
 	enabled := plan.Status == schedulersdk.ScheduledPlanStatusEnabled
 	if err := projector.ReconcileScheduledPlan(ctx, definition, next, enabled); err != nil {
-		return fmt.Errorf("project scheduled plan %s: %w", plan.ID, err)
+		return fmt.Errorf("project scheduled plan %s: %w", plan.PlanID, err)
 	}
 	return nil
 }
@@ -436,13 +441,6 @@ func normalizeScheduledPlanOwner(value schedulersdk.ScheduledPlanOwner) schedule
 	value.UserID = strings.TrimSpace(value.UserID)
 	value.ProductKey = strings.TrimSpace(value.ProductKey)
 	return value
-}
-
-func scheduledPlanID(runtimeID string, owner schedulersdk.ScheduledPlanOwner, clientID string) string {
-	digest := sha256.Sum256([]byte(strings.Join([]string{
-		strings.TrimSpace(runtimeID), owner.WorkspaceID, owner.UserID, owner.ProductKey, strings.TrimSpace(clientID),
-	}, "\x00")))
-	return "plan_" + hex.EncodeToString(digest[:16])
 }
 
 var _ schedulersdk.ScheduledPlanService = (*Service)(nil)

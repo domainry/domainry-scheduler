@@ -39,7 +39,7 @@ func TestCommandReceiptUsesSharedOperationStoreAndRuntimeScope(t *testing.T) {
 		t.Fatalf("concurrent claim=%+v claimed=%t err=%v", receipt, claimed, err)
 	}
 	response := []byte(`{"id":"run-1","status":"succeeded"}`)
-	if err := first.CompleteCommand(t.Context(), claim.IdempotencyKey, claim.RequestHash, 200, response); err != nil {
+	if err := first.CompleteCommand(t.Context(), receipt, 200, response); err != nil {
 		t.Fatal(err)
 	}
 	receipt, claimed, err = second.ClaimCommand(t.Context(), claim)
@@ -377,7 +377,7 @@ func TestStandaloneSchemaMigrationIsIdempotent(t *testing.T) {
 	if schedules != 1 {
 		t.Fatalf("scheduler schedule tables=%d", schedules)
 	}
-	for _, retired := range []string{"_scheduler_definition_states", "_scheduler_plans", "_scheduler_command_receipts", "_scheduler_definitions", "_scheduler_definition_snapshots", "_scheduler_definition_publications"} {
+	for _, retired := range []string{"_scheduler_definition_states", "_scheduler_command_receipts", "_scheduler_definitions", "_scheduler_definition_snapshots", "_scheduler_definition_publications"} {
 		var found int
 		if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, retired).Scan(&found); err != nil || found != 0 {
 			t.Fatalf("retired table %s found=%d err=%v", retired, found, err)

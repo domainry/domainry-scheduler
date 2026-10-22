@@ -14,6 +14,7 @@ const (
 	SchemaVersion     uint = 1
 	MigrationOwner         = "scheduler"
 	ScheduleTableName      = "_scheduler_schedules"
+	PlanTableName          = "_scheduler_plans"
 	RunTableName           = "_scheduler_runs"
 )
 
@@ -27,6 +28,7 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 		unique  [][]string
 	}{
 		{name: ScheduleTableName, columns: []ormschema.ColumnDefinition{
+			physicalID(),
 			required("runtime_id", ormschema.TextKey(191)), required("schedule_id", ormschema.TextKey(191)),
 			required("kind", ormschema.TextKey(32)), required("source_kind", ormschema.TextKey(32)),
 			required("source_id", ormschema.TextKey(191)), optional("definition_revision", ormschema.TextKey(191)),
@@ -35,14 +37,17 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 			optional("last_run_status", ormschema.TextKey(32)), required("snapshot_revision", ormschema.BigInt()),
 			optional("publication_generation", ormschema.BigInt()), optional("publication_session_sha256", ormschema.TextKey(64)),
 			optional("publication_content_sha256", ormschema.TextKey(64)),
-			optional("client_id", ormschema.TextKey(191)), optional("request_sha256", ormschema.TextKey(64)),
-			optional("workspace_id", ormschema.TextKey(191)), optional("user_id", ormschema.TextKey(191)),
-			optional("product_key", ormschema.TextKey(191)), optional("status", ormschema.TextKey(32)),
-			optional("plan_revision", ormschema.BigInt()), optional("plan_json", ormschema.JSON()),
 			required("created_at", ormschema.BigInt()), required("updated_at", ormschema.BigInt()),
-		}, primary: []string{"runtime_id", "schedule_id"}},
+		}, primary: []string{"id"}, unique: [][]string{{"runtime_id", "schedule_id"}}},
+		{name: PlanTableName, columns: []ormschema.ColumnDefinition{
+			physicalID(), required("plan_id", ormschema.TextKey(191)),
+			technicalID("runtime_id"), required("client_id", ormschema.TextKey(191)), required("request_sha256", ormschema.TextKey(64)),
+			technicalID("workspace_id"), technicalID("user_id"), required("product_key", ormschema.TextKey(191)),
+			required("status", ormschema.TextKey(32)), required("plan_revision", ormschema.BigInt()), required("plan_json", ormschema.JSON()),
+			required("created_at", ormschema.BigInt()), required("updated_at", ormschema.BigInt()),
+		}, primary: []string{"id"}, unique: [][]string{{"plan_id"}, {"runtime_id", "workspace_id", "user_id", "product_key", "client_id"}}},
 		{name: RunTableName, columns: []ormschema.ColumnDefinition{
-			required("runtime_id", ormschema.TextKey(191)), required("run_id", ormschema.TextKey(191)),
+			physicalID(), required("run_id", ormschema.TextKey(191)), required("runtime_id", ormschema.TextKey(191)),
 			required("definition_key", ormschema.TextKey(191)), required("definition_revision", ormschema.TextKey(191)),
 			required("scheduled_for", ormschema.BigInt()), required("window_key", ormschema.TextKey(191)),
 			required("target_json", ormschema.JSON()), optional("metadata_json", ormschema.JSON()),
@@ -54,7 +59,7 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 			optional("dead_letter_resolved_by", ormschema.TextKey(191)), optional("dead_letter_resolution_operation_id", ormschema.TextKey(191)),
 			optional("dead_letter_resolution_reason", ormschema.LongText()),
 			required("created_at", ormschema.BigInt()), required("updated_at", ormschema.BigInt()),
-		}, primary: []string{"runtime_id", "run_id"}, unique: [][]string{{"runtime_id", "definition_key", "scheduled_for"}}},
+		}, primary: []string{"id"}, unique: [][]string{{"run_id"}, {"runtime_id", "definition_key", "scheduled_for"}}},
 	}
 	statements := make([]string, 0, len(definitions))
 	for _, definition := range definitions {
@@ -74,14 +79,20 @@ func Migrations(r modulehost.Dialect) ([]modulehost.SchemaMigration, error) {
 func SchemaOwnership() []schemaownership.Table {
 	return []schemaownership.Table{
 		{
-			Name: ScheduleTableName, Owner: MigrationOwner, WorkspaceScope: schemaownership.ScopeExplicitMixed,
-			RetentionClass: schemaownership.RetentionProduct, PrimaryKey: []string{"runtime_id", "schedule_id"},
+			Name: ScheduleTableName, Owner: MigrationOwner, Kind: schemaownership.KindState, WorkspaceScope: schemaownership.ScopeExplicitMixed,
+			RetentionClass: schemaownership.RetentionProduct, PrimaryKey: []string{"id"},
 			BoundedQueryPath: "runtime plus schedule identity; workspace/user/product plan cursor and due-schedule scans enforce limits",
 			DeletionPolicy:   "scheduled plans are soft-deleted in status; definition and plan state remain for product retention",
 		},
 		{
-			Name: RunTableName, Owner: MigrationOwner, WorkspaceScope: schemaownership.ScopeExplicitMixed,
-			RetentionClass: schemaownership.RetentionProduct, PrimaryKey: []string{"runtime_id", "run_id"},
+			Name: PlanTableName, Owner: MigrationOwner, Kind: schemaownership.KindEntity, WorkspaceScope: schemaownership.ScopeExplicitMixed,
+			RetentionClass: schemaownership.RetentionProduct, PrimaryKey: []string{"id"}, EntityIDColumn: "plan_id", EntityIDPrefix: "plan", BusinessKey: []string{"plan_id"},
+			BoundedQueryPath: "runtime plus owner and physical ID for plan pages; globally unique plan identity for point reads",
+			DeletionPolicy:   "plans are soft-deleted and retained as product scheduling history",
+		},
+		{
+			Name: RunTableName, Owner: MigrationOwner, Kind: schemaownership.KindEntity, WorkspaceScope: schemaownership.ScopeExplicitMixed,
+			RetentionClass: schemaownership.RetentionProduct, PrimaryKey: []string{"id"}, EntityIDColumn: "run_id", EntityIDPrefix: "run", BusinessKey: []string{"run_id"},
 			BoundedQueryPath: "runtime plus run identity; due, retry, history and dead-letter scans enforce limits",
 			DeletionPolicy:   "terminal and resolved dead-letter runs remain as product execution history; no physical purge path is registered",
 		},
@@ -95,4 +106,12 @@ func required(name string, kind ormschema.ColumnType) ormschema.ColumnDefinition
 }
 func optional(name string, kind ormschema.ColumnType) ormschema.ColumnDefinition {
 	return ormschema.Column(name, kind)
+}
+
+func physicalID() ormschema.ColumnDefinition {
+	return ormschema.Column("id", ormschema.BigInt()).NotNull().AutoIncrement()
+}
+
+func technicalID(name string) ormschema.ColumnDefinition {
+	return required(name, ormschema.TextKey(191)).ASCIIKey()
 }

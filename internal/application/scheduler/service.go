@@ -378,7 +378,7 @@ func (b *Service) dispatchClaimed(ctx context.Context, run schedulersdk.Run, def
 				return err
 			}
 			if !owned {
-				return fmt.Errorf("Scheduler run %q lease lost", run.Trigger.RunID)
+				return fmt.Errorf("Scheduler run %q lease lost", run.RunID)
 			}
 			return nil
 		})

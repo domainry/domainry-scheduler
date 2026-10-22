@@ -2,13 +2,12 @@ package scheduler
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/domainry/domainry-foundation/entityid"
 	sharedoperation "github.com/domainry/domainry-foundation/operation"
 	"github.com/domainry/domainry-foundation/requestcontext"
 	schedulermodel "github.com/domainry/domainry-scheduler/internal/domain/scheduler/model"
@@ -54,8 +53,12 @@ func (s *CommandReceiptStore) ClaimCommand(ctx context.Context, receipt schedule
 	if actor == "" {
 		actor = "scheduler:" + s.runtimeID
 	}
+	operationID, err := entityid.New("op")
+	if err != nil {
+		return schedulermodel.CommandReceipt{}, false, err
+	}
 	stored, claimed, err := s.operations.Claim(ctx, sharedoperation.Command{
-		ID: schedulerOperationID(s.runtimeID, receipt.IdempotencyKey),
+		OperationID: operationID,
 		Scope: sharedoperation.Scope{
 			SystemPurpose: schedulerOperationPurpose,
 			ResourceType:  "scheduler_command",
@@ -72,22 +75,23 @@ func (s *CommandReceiptStore) ClaimCommand(ctx context.Context, receipt schedule
 	return schedulerCommandReceipt(stored, s.runtimeID), claimed, nil
 }
 
-func (s *CommandReceiptStore) CompleteCommand(ctx context.Context, idempotencyKey, requestHash string, httpStatus int, responseJSON []byte) error {
+func (s *CommandReceiptStore) CompleteCommand(ctx context.Context, receipt schedulermodel.CommandReceipt, httpStatus int, responseJSON []byte) error {
 	result, err := json.Marshal(commandOperationResult{HTTPStatus: httpStatus, ResponseJSON: append([]byte(nil), responseJSON...)})
 	if err != nil {
 		return err
 	}
 	return s.operations.Complete(ctx, sharedoperation.Completion{
-		ID:    schedulerOperationID(s.runtimeID, idempotencyKey),
-		Scope: sharedoperation.Scope{SystemPurpose: schedulerOperationPurpose},
-		Owner: schedulerOperationOwner, Kind: schedulerOperationKind,
-		IdempotencyKey: schedulerOperationKey(s.runtimeID, idempotencyKey), RequestFingerprint: strings.TrimSpace(requestHash),
+		OperationID: receipt.OperationID,
+		Scope:       sharedoperation.Scope{SystemPurpose: schedulerOperationPurpose},
+		Owner:       schedulerOperationOwner, Kind: schedulerOperationKind,
+		IdempotencyKey: schedulerOperationKey(s.runtimeID, receipt.IdempotencyKey), RequestFingerprint: strings.TrimSpace(receipt.RequestHash),
 		Result: result, CompletedAt: time.Now().UTC(),
 	})
 }
 
 func schedulerCommandReceipt(stored sharedoperation.Receipt, runtimeID string) schedulermodel.CommandReceipt {
 	receipt := schedulermodel.CommandReceipt{
+		OperationID:    stored.Command.OperationID,
 		IdempotencyKey: strings.TrimPrefix(stored.Command.IdempotencyKey, runtimeID+":"),
 		ActionKey:      stored.Command.ActionKey, ResourceKey: stored.Command.StatusURL,
 		RequestHash: stored.Command.RequestFingerprint,
@@ -108,11 +112,6 @@ func schedulerCommandReceipt(stored sharedoperation.Receipt, runtimeID string) s
 
 func schedulerOperationKey(runtimeID, idempotencyKey string) string {
 	return strings.TrimSpace(runtimeID) + ":" + strings.TrimSpace(idempotencyKey)
-}
-
-func schedulerOperationID(runtimeID, idempotencyKey string) string {
-	digest := sha256.Sum256([]byte(schedulerOperationKey(runtimeID, idempotencyKey)))
-	return "scheduler_operation:" + hex.EncodeToString(digest[:16])
 }
 
 var _ schedulermodel.CommandReceiptStore = (*CommandReceiptStore)(nil)

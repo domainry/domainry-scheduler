@@ -140,7 +140,7 @@ func TestDatabaseServicePersistsScheduledPlansAcrossOwnerRestart(t *testing.T) {
 		Input:   json.RawMessage(`{"goal":"整理未完成待办"}`), AllowedActions: []string{"todo.list", "artifact.create"},
 		Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"}, ConversationRef: schedulersdk.ScheduledPlanConversationRef{ConversationID: "conversation-a"},
 	})
-	if err != nil || receipt.Replay || receipt.Plan.ID == "" {
+	if err != nil || receipt.Replay || receipt.Plan.PlanID == "" {
 		t.Fatalf("receipt=%+v err=%v", receipt, err)
 	}
 	if err := first.Shutdown(t.Context()); err != nil {
@@ -148,17 +148,17 @@ func TestDatabaseServicePersistsScheduledPlansAcrossOwnerRestart(t *testing.T) {
 	}
 	second := open("scheduler-plan-b")
 	defer second.Shutdown(t.Context())
-	loaded, err := second.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: receipt.Plan.ID})
-	if err != nil || loaded.ID != receipt.Plan.ID || loaded.Trigger.Schedule == nil || loaded.Trigger.Schedule.DayOfWeek != "monday" || loaded.ConversationRef.ConversationID != "conversation-a" {
+	loaded, err := second.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: receipt.Plan.PlanID})
+	if err != nil || loaded.PlanID != receipt.Plan.PlanID || loaded.Trigger.Schedule == nil || loaded.Trigger.Schedule.DayOfWeek != "monday" || loaded.ConversationRef.ConversationID != "conversation-a" {
 		t.Fatalf("loaded=%+v err=%v", loaded, err)
 	}
 	other := owner
 	other.WorkspaceID = "workspace-b"
-	if _, err := second.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: other, PlanID: receipt.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+	if _, err := second.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: other, PlanID: receipt.Plan.PlanID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
 		t.Fatalf("cross-workspace read err=%v", err)
 	}
 	otherRuntime := schedulersdk.ApplicationRef{RuntimeID: "runtime-other"}
-	if _, err := second.GetScheduledPlan(t.Context(), otherRuntime, schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: receipt.Plan.ID}); err == nil {
+	if _, err := second.GetScheduledPlan(t.Context(), otherRuntime, schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: receipt.Plan.PlanID}); err == nil {
 		t.Fatal("configured SaaS plan service accepted another Runtime")
 	}
 }
@@ -206,7 +206,7 @@ func TestScheduledPlanWorkerRetriesOnceAfterSaaSRestartWithoutDuplicateWindow(t 
 		Target:          schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"},
 		ConversationRef: schedulersdk.ScheduledPlanConversationRef{ConversationID: "conversation-a", RunID: "run-a"},
 	})
-	if err != nil || receipt.Plan.ID == "" {
+	if err != nil || receipt.Plan.PlanID == "" {
 		t.Fatalf("receipt=%+v err=%v", receipt, err)
 	}
 	var firstTrigger schedulersdk.Trigger
@@ -244,12 +244,12 @@ func TestScheduledPlanWorkerRetriesOnceAfterSaaSRestartWithoutDuplicateWindow(t 
 		t.Fatalf("first=%+v recovered=%+v", firstTrigger, recovered)
 	}
 	var payload schedulersdk.ScheduledPlanDispatch
-	if err := json.Unmarshal(recovered.Target.Payload, &payload); err != nil || payload.ContractVersion != schedulersdk.ScheduledPlanDispatchContractVersion || payload.PlanID != receipt.Plan.ID || payload.Owner != owner || payload.ConversationRef.RunID != "run-a" || len(payload.AllowedActions) != 2 || string(payload.Input) != `{"goal":"整理未完成待办"}` {
+	if err := json.Unmarshal(recovered.Target.Payload, &payload); err != nil || payload.ContractVersion != schedulersdk.ScheduledPlanDispatchContractVersion || payload.PlanID != receipt.Plan.PlanID || payload.Owner != owner || payload.ConversationRef.RunID != "run-a" || len(payload.AllowedActions) != 2 || string(payload.Input) != `{"goal":"整理未完成待办"}` {
 		t.Fatalf("payload=%+v raw=%s err=%v", payload, recovered.Target.Payload, err)
 	}
 	waitSchedulerRunStatus(t, db, ref.RuntimeID, recovered.RunID, "succeeded")
 	var runs int
-	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_runs WHERE runtime_id = ? AND definition_key = ?`, ref.RuntimeID, "scheduled-plan:"+receipt.Plan.ID).Scan(&runs); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM _scheduler_runs WHERE runtime_id = ? AND definition_key = ?`, ref.RuntimeID, "scheduled-plan:"+receipt.Plan.PlanID).Scan(&runs); err != nil {
 		t.Fatal(err)
 	}
 	var attempt int
@@ -332,7 +332,7 @@ func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
 	sdkRequest := request
 	sdkRequest.ClientID = "weekly-sdk"
 	sdkReceipt, err := clientTransport.CreateScheduledPlan(t.Context(), ref, sdkRequest)
-	if err != nil || sdkReceipt.Replay || sdkReceipt.Plan.ID == "" {
+	if err != nil || sdkReceipt.Replay || sdkReceipt.Plan.PlanID == "" {
 		t.Fatalf("SDK create receipt=%+v err=%v", sdkReceipt, err)
 	}
 	response := call(server, http.MethodPost, "/v1/applications/"+ref.RuntimeID+"/plans", request)
@@ -340,12 +340,12 @@ func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
 		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
 	}
 	var receipt schedulersdk.ScheduledPlanReceipt
-	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil || receipt.Replay || receipt.Plan.ID == "" {
+	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil || receipt.Replay || receipt.Plan.PlanID == "" {
 		t.Fatalf("receipt=%+v err=%v", receipt, err)
 	}
 	replay := call(server, http.MethodPost, "/v1/applications/"+ref.RuntimeID+"/plans", request)
 	var replayReceipt schedulersdk.ScheduledPlanReceipt
-	if err := json.Unmarshal(replay.Body.Bytes(), &replayReceipt); err != nil || replay.Code != http.StatusOK || !replayReceipt.Replay || replayReceipt.Plan.ID != receipt.Plan.ID {
+	if err := json.Unmarshal(replay.Body.Bytes(), &replayReceipt); err != nil || replay.Code != http.StatusOK || !replayReceipt.Replay || replayReceipt.Plan.PlanID != receipt.Plan.PlanID {
 		t.Fatalf("replay status=%d receipt=%+v err=%v", replay.Code, replayReceipt, err)
 	}
 	changed := request
@@ -366,17 +366,17 @@ func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sdkLoaded, err := restartedTransport.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID})
-	if err != nil || sdkLoaded.ID != sdkReceipt.Plan.ID || sdkLoaded.ConversationRef.RunID != "run-a" {
+	sdkLoaded, err := restartedTransport.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID})
+	if err != nil || sdkLoaded.PlanID != sdkReceipt.Plan.PlanID || sdkLoaded.ConversationRef.RunID != "run-a" {
 		t.Fatalf("SDK loaded=%+v err=%v", sdkLoaded, err)
 	}
 	ownerQuery := "?workspace_id=workspace-a&user_id=user-a&product_key=agent"
-	loadedResponse := call(restarted, http.MethodGet, "/v1/applications/"+ref.RuntimeID+"/plans/"+receipt.Plan.ID+ownerQuery, nil)
+	loadedResponse := call(restarted, http.MethodGet, "/v1/applications/"+ref.RuntimeID+"/plans/"+receipt.Plan.PlanID+ownerQuery, nil)
 	var loaded schedulersdk.ScheduledPlan
-	if err := json.Unmarshal(loadedResponse.Body.Bytes(), &loaded); err != nil || loadedResponse.Code != http.StatusOK || loaded.ID != receipt.Plan.ID || loaded.Trigger.Schedule == nil || loaded.Trigger.Schedule.DayOfWeek != "monday" || loaded.ConversationRef.RunID != "run-a" {
+	if err := json.Unmarshal(loadedResponse.Body.Bytes(), &loaded); err != nil || loadedResponse.Code != http.StatusOK || loaded.PlanID != receipt.Plan.PlanID || loaded.Trigger.Schedule == nil || loaded.Trigger.Schedule.DayOfWeek != "monday" || loaded.ConversationRef.RunID != "run-a" {
 		t.Fatalf("loaded status=%d plan=%+v err=%v", loadedResponse.Code, loaded, err)
 	}
-	forbidden := call(restarted, http.MethodGet, "/v1/applications/"+ref.RuntimeID+"/plans/"+receipt.Plan.ID+"?workspace_id=workspace-a&user_id=user-b&product_key=agent", nil)
+	forbidden := call(restarted, http.MethodGet, "/v1/applications/"+ref.RuntimeID+"/plans/"+receipt.Plan.PlanID+"?workspace_id=workspace-a&user_id=user-b&product_key=agent", nil)
 	if forbidden.Code != http.StatusNotFound {
 		t.Fatalf("cross-user status=%d body=%s", forbidden.Code, forbidden.Body.String())
 	}
@@ -385,42 +385,42 @@ func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
 		t.Fatalf("management list=%+v err=%v", page, err)
 	}
 	updated, err := restartedTransport.UpdateScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanUpdate{
-		Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 1, Name: "每周二整理待办", Timezone: "Asia/Shanghai",
+		Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID, ExpectedRevision: 1, Name: "每周二整理待办", Timezone: "Asia/Shanghai",
 		Trigger: schedulersdk.ScheduledPlanTrigger{Type: "recurring", Schedule: &schedulersdk.Schedule{Type: "weekly_at", TimeOfDay: "10:30", DayOfWeek: "tuesday", Timezone: "Asia/Shanghai"}},
 		Input:   sdkReceipt.Plan.Input, AllowedActions: sdkReceipt.Plan.AllowedActions, Target: sdkReceipt.Plan.Target, ConversationRef: sdkReceipt.Plan.ConversationRef,
 	})
 	if err != nil || updated.Plan.Revision != 2 || updated.Plan.Trigger.Schedule == nil || updated.Plan.Trigger.Schedule.DayOfWeek != "tuesday" {
 		t.Fatalf("management update=%+v err=%v", updated, err)
 	}
-	if _, err := restartedTransport.UpdateScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanUpdate{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 1, Name: "stale", Timezone: updated.Plan.Timezone, Trigger: updated.Plan.Trigger, Input: updated.Plan.Input, AllowedActions: updated.Plan.AllowedActions, Target: updated.Plan.Target, ConversationRef: updated.Plan.ConversationRef}); !errors.Is(err, schedulersdk.ErrScheduledPlanConflict) {
+	if _, err := restartedTransport.UpdateScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanUpdate{Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID, ExpectedRevision: 1, Name: "stale", Timezone: updated.Plan.Timezone, Trigger: updated.Plan.Trigger, Input: updated.Plan.Input, AllowedActions: updated.Plan.AllowedActions, Target: updated.Plan.Target, ConversationRef: updated.Plan.ConversationRef}); !errors.Is(err, schedulersdk.ErrScheduledPlanConflict) {
 		t.Fatalf("stale SDK update err=%v", err)
 	}
-	paused, err := restartedTransport.PauseScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 2})
+	paused, err := restartedTransport.PauseScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID, ExpectedRevision: 2})
 	if err != nil || paused.Plan.Status != schedulersdk.ScheduledPlanStatusPaused || paused.Plan.Revision != 3 {
 		t.Fatalf("management pause=%+v err=%v", paused, err)
 	}
-	pauseReplay, err := restartedTransport.PauseScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 2})
+	pauseReplay, err := restartedTransport.PauseScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID, ExpectedRevision: 2})
 	if err != nil || !pauseReplay.Replay || pauseReplay.Plan.Revision != 3 {
 		t.Fatalf("management pause replay=%+v err=%v", pauseReplay, err)
 	}
-	resumed, err := restartedTransport.ResumeScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 3})
+	resumed, err := restartedTransport.ResumeScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID, ExpectedRevision: 3})
 	if err != nil || resumed.Plan.Status != schedulersdk.ScheduledPlanStatusEnabled || resumed.Plan.Revision != 4 {
 		t.Fatalf("management resume=%+v err=%v", resumed, err)
 	}
-	deleted, err := restartedTransport.DeleteScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 4})
+	deleted, err := restartedTransport.DeleteScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID, ExpectedRevision: 4})
 	if err != nil || !deleted.Deleted || deleted.Revision != 5 {
 		t.Fatalf("management delete=%+v err=%v", deleted, err)
 	}
-	deleteReplay, err := restartedTransport.DeleteScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID, ExpectedRevision: 4})
+	deleteReplay, err := restartedTransport.DeleteScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID, ExpectedRevision: 4})
 	if err != nil || !deleteReplay.Replay || deleteReplay.Revision != 5 {
 		t.Fatalf("management delete replay=%+v err=%v", deleteReplay, err)
 	}
-	if _, err := restartedTransport.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+	if _, err := restartedTransport.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
 		t.Fatalf("deleted SDK get err=%v", err)
 	}
 	otherOwner := request.Owner
 	otherOwner.UserID = "user-b"
-	if _, err := restartedTransport.PauseScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: otherOwner, PlanID: receipt.Plan.ID, ExpectedRevision: 1}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+	if _, err := restartedTransport.PauseScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanStatusChange{Owner: otherOwner, PlanID: receipt.Plan.PlanID, ExpectedRevision: 1}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
 		t.Fatalf("cross-user SDK pause err=%v", err)
 	}
 	if err := second.Shutdown(t.Context()); err != nil {
@@ -437,10 +437,10 @@ func TestScheduledPlanSaaSHTTPPersistsExactCommandAndOwnerScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, err = thirdTransport.ListScheduledPlans(t.Context(), ref, schedulersdk.ScheduledPlanList{Owner: request.Owner, Limit: 10})
-	if err != nil || len(page.Items) != 1 || page.Items[0].ID != receipt.Plan.ID {
+	if err != nil || len(page.Items) != 1 || page.Items[0].PlanID != receipt.Plan.PlanID {
 		t.Fatalf("post-delete restart page=%+v err=%v", page, err)
 	}
-	if _, err := thirdTransport.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: request.Owner, PlanID: sdkReceipt.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+	if _, err := thirdTransport.GetScheduledPlan(t.Context(), ref, schedulersdk.ScheduledPlanLookup{Owner: request.Owner, PlanID: sdkReceipt.Plan.PlanID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
 		t.Fatalf("tombstone revived after restart err=%v", err)
 	}
 }

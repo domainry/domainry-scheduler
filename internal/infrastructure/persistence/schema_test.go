@@ -15,7 +15,7 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(migrations) != 1 || len(migrations[0].Statements) != 2 {
+			if len(migrations) != 1 || len(migrations[0].Statements) != 3 {
 				t.Fatalf("unexpected migration inventory: %#v", migrations)
 			}
 			for _, migration := range migrations {
@@ -33,7 +33,7 @@ func TestSchemaMigrationsRenderThroughEverySupportedORMEngine(t *testing.T) {
 			}
 			for _, migration := range migrations {
 				for _, statement := range migration.Statements {
-					if strings.Contains(statement, "_scheduler_dead_letters") || strings.Contains(statement, "_scheduler_run_events") || strings.Contains(statement, "_scheduler_definition_states") || strings.Contains(statement, "_scheduler_plans") || strings.Contains(statement, "_scheduler_command_receipts") || strings.Contains(statement, "_scheduler_definitions") || strings.Contains(statement, "_scheduler_definition_snapshots") || strings.Contains(statement, "_scheduler_definition_publications") {
+					if strings.Contains(statement, "_scheduler_dead_letters") || strings.Contains(statement, "_scheduler_run_events") || strings.Contains(statement, "_scheduler_definition_states") || strings.Contains(statement, "_scheduler_command_receipts") || strings.Contains(statement, "_scheduler_definitions") || strings.Contains(statement, "_scheduler_definition_snapshots") || strings.Contains(statement, "_scheduler_definition_publications") {
 						t.Fatalf("Scheduler retained a redundant history table: %q", statement)
 					}
 				}

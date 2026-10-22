@@ -91,13 +91,11 @@ func (b *bindingStub) ClaimCommand(_ context.Context, receipt schedulermodel.Com
 	b.commandReceipts[receipt.IdempotencyKey] = receipt
 	return receipt, true, nil
 }
-func (b *bindingStub) CompleteCommand(_ context.Context, key, requestHash string, status int, body []byte) error {
-	receipt := b.commandReceipts[key]
-	receipt.RequestHash = requestHash
+func (b *bindingStub) CompleteCommand(_ context.Context, receipt schedulermodel.CommandReceipt, status int, body []byte) error {
 	receipt.Status = schedulermodel.CommandReceiptCompleted
 	receipt.HTTPStatus = status
 	receipt.ResponseJSON = append([]byte(nil), body...)
-	b.commandReceipts[key] = receipt
+	b.commandReceipts[receipt.IdempotencyKey] = receipt
 	return nil
 }
 
@@ -156,7 +154,7 @@ func TestAdapterReadsDefinitionsPreviewsAndState(t *testing.T) {
 		t.Fatalf("invalid=%d %s", invalid.Code, invalid.Body.String())
 	}
 	state := serve(value, http.MethodGet, "/scheduler/state", "", nil)
-	if state.Code != http.StatusOK || !strings.Contains(state.Body.String(), `"id":"run-1"`) || !strings.Contains(state.Body.String(), `"id":"run-dead"`) {
+	if state.Code != http.StatusOK || !strings.Contains(state.Body.String(), `"run_id":"run-1"`) || !strings.Contains(state.Body.String(), `"run_id":"run-dead"`) {
 		t.Fatalf("state=%d %s", state.Code, state.Body.String())
 	}
 }
@@ -172,7 +170,7 @@ func TestAdapterExecutesEverySchedulerCommandWithOperatorEvidence(t *testing.T) 
 		body string
 		want string
 	}{
-		{"/scheduler/definitions/daily/run", "", `"id":"run-now"`},
+		{"/scheduler/definitions/daily/run", "", `"run_id":"run-now"`},
 		{"/scheduler/definitions/daily/reschedule", `{"next_run_at":"2026-09-06T09:00:00Z"}`, `"status":"rescheduled"`},
 		{"/scheduler/runs/run-1/retry", "", `"status":"retrying"`},
 		{"/scheduler/runs/run-1/cancel", "", `"status":"cancelled"`},
@@ -239,15 +237,15 @@ func TestAdapterTreatsUnknownLengthEmptyBodyAsOrdinaryProductionRun(t *testing.T
 func schedulerBindingFixture() *bindingStub {
 	now := time.Date(2026, 9, 5, 8, 0, 0, 0, time.UTC)
 	definition := schedulersdk.Definition{Key: "daily", Name: "Daily review", Status: "enabled", Revision: "v1", Schedule: schedulersdk.Schedule{Type: "cron", Expression: "0 9 * * *", Timezone: "Asia/Shanghai"}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "workflow", Operation: "scheduled:daily"}, Policy: schedulersdk.Policy{MaxAttempts: 3}}
-	run := schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: "daily", Attempt: 1, ScheduledFor: now}, Status: "failed", LastError: "timeout", CreatedAt: now, UpdatedAt: now}
+	run := schedulersdk.Run{ID: 1, RunID: "run-1", Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: "daily", Attempt: 1, ScheduledFor: now}, Status: "failed", LastError: "timeout", CreatedAt: now, UpdatedAt: now}
 	return &bindingStub{
 		repository: &definitionRepositoryStub{snapshot: persistence.DefinitionSnapshot{Revision: 1, Definitions: []schedulersdk.Definition{definition}}},
 		runs:       []schedulersdk.Run{run}, deadLetters: []schedulersdk.DeadLetter{{RunID: "run-dead", DefinitionKey: "daily", Status: "open", FailedAt: now}},
-		triggeredRun:    schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: "run-now", DefinitionKey: "daily"}, Status: "succeeded"},
-		retriedRun:      schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: "daily"}, Status: "retrying"},
-		cancelledRun:    schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: "daily"}, Status: "cancelled"},
+		triggeredRun:    schedulersdk.Run{ID: 2, RunID: "run-now", Trigger: schedulersdk.Trigger{RunID: "run-now", DefinitionKey: "daily"}, Status: "succeeded"},
+		retriedRun:      schedulersdk.Run{ID: 1, RunID: "run-1", Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: "daily"}, Status: "retrying"},
+		cancelledRun:    schedulersdk.Run{ID: 1, RunID: "run-1", Trigger: schedulersdk.Trigger{RunID: "run-1", DefinitionKey: "daily"}, Status: "cancelled"},
 		resolvedLetter:  schedulersdk.DeadLetter{RunID: "run-dead", DefinitionKey: "daily", Status: "resolved"},
-		requeuedRun:     schedulersdk.Run{Trigger: schedulersdk.Trigger{RunID: "run-dead", DefinitionKey: "daily"}, Status: "retrying"},
+		requeuedRun:     schedulersdk.Run{ID: 3, RunID: "run-dead", Trigger: schedulersdk.Trigger{RunID: "run-dead", DefinitionKey: "daily"}, Status: "retrying"},
 		commandReceipts: map[string]schedulermodel.CommandReceipt{},
 	}
 }

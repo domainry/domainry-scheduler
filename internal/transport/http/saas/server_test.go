@@ -98,12 +98,12 @@ func (s *serviceStub) Close(context.Context, schedulersdk.ApplicationRef) error 
 }
 func (s *serviceStub) CreateScheduledPlan(_ context.Context, application schedulersdk.ApplicationRef, input schedulersdk.ScheduledPlanCreate) (schedulersdk.ScheduledPlanReceipt, error) {
 	s.called(application)
-	s.plan = schedulersdk.ScheduledPlan{ID: "plan-saas", Name: input.Name, Owner: input.Owner, Timezone: input.Timezone, Trigger: input.Trigger, Input: input.Input, AllowedActions: input.AllowedActions, Target: input.Target, ConversationRef: input.ConversationRef, Status: "enabled", Revision: 1}
+	s.plan = schedulersdk.ScheduledPlan{ID: 1, PlanID: "plan-saas", Name: input.Name, Owner: input.Owner, Timezone: input.Timezone, Trigger: input.Trigger, Input: input.Input, AllowedActions: input.AllowedActions, Target: input.Target, ConversationRef: input.ConversationRef, Status: "enabled", Revision: 1}
 	return schedulersdk.ScheduledPlanReceipt{Plan: s.plan}, nil
 }
 func (s *serviceStub) GetScheduledPlan(_ context.Context, application schedulersdk.ApplicationRef, lookup schedulersdk.ScheduledPlanLookup) (schedulersdk.ScheduledPlan, error) {
 	s.called(application)
-	if lookup.PlanID != s.plan.ID || lookup.Owner != s.plan.Owner {
+	if lookup.PlanID != s.plan.PlanID || lookup.Owner != s.plan.Owner {
 		return schedulersdk.ScheduledPlan{}, schedulersdk.ErrScheduledPlanNotFound
 	}
 	return s.plan, nil
@@ -184,16 +184,16 @@ func TestServerAndSDKTransportPreserveScheduledPlanOwnerScope(t *testing.T) {
 	owner := schedulersdk.ScheduledPlanOwner{WorkspaceID: "workspace-a", UserID: "user-a", ProductKey: "agent"}
 	at := time.Date(2026, 9, 18, 1, 0, 0, 0, time.UTC)
 	created, err := transport.CreateScheduledPlan(t.Context(), application, schedulersdk.ScheduledPlanCreate{ClientID: "friday", Name: "Friday reminder", Owner: owner, Timezone: "Asia/Shanghai", Trigger: schedulersdk.ScheduledPlanTrigger{Type: "once", At: &at}, Input: json.RawMessage(`{"status":"open"}`), AllowedActions: []string{"todo.list"}, Target: schedulersdk.TargetRef{Type: "runtime_operation", Owner: "agent", Operation: "conversation_task_start"}, ConversationRef: schedulersdk.ScheduledPlanConversationRef{ConversationID: "conversation-a"}})
-	if err != nil || created.Plan.ID != "plan-saas" || service.application.RuntimeID != "runtime-a" {
+	if err != nil || created.Plan.PlanID != "plan-saas" || service.application.RuntimeID != "runtime-a" {
 		t.Fatalf("created=%+v application=%+v err=%v", created, service.application, err)
 	}
-	loaded, err := transport.GetScheduledPlan(t.Context(), application, schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: created.Plan.ID})
-	if err != nil || loaded.ID != created.Plan.ID || loaded.ConversationRef.ConversationID != "conversation-a" {
+	loaded, err := transport.GetScheduledPlan(t.Context(), application, schedulersdk.ScheduledPlanLookup{Owner: owner, PlanID: created.Plan.PlanID})
+	if err != nil || loaded.PlanID != created.Plan.PlanID || loaded.ConversationRef.ConversationID != "conversation-a" {
 		t.Fatalf("loaded=%+v err=%v", loaded, err)
 	}
 	other := owner
 	other.UserID = "user-b"
-	if _, err := transport.GetScheduledPlan(t.Context(), application, schedulersdk.ScheduledPlanLookup{Owner: other, PlanID: created.Plan.ID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
+	if _, err := transport.GetScheduledPlan(t.Context(), application, schedulersdk.ScheduledPlanLookup{Owner: other, PlanID: created.Plan.PlanID}); !errors.Is(err, schedulersdk.ErrScheduledPlanNotFound) {
 		t.Fatalf("cross-user err=%v", err)
 	}
 }

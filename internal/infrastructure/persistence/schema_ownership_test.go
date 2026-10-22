@@ -44,7 +44,9 @@ func TestSchemaOwnershipMatchesEveryFreshSchedulerTableAndPrimaryKey(t *testing.
 			quoted[index] = `"` + column + `"`
 		}
 		if primaryKey := "PRIMARY KEY (" + strings.Join(quoted, ", ") + ")"; !strings.Contains(statement, primaryKey) {
-			t.Fatalf("Scheduler table %s ownership primary key %v does not match DDL: %s", table.Name, table.PrimaryKey, statement)
+			if !(len(table.PrimaryKey) == 1 && table.PrimaryKey[0] == "id" && strings.Contains(statement, `"id" INTEGER PRIMARY KEY AUTOINCREMENT`)) {
+				t.Fatalf("Scheduler table %s ownership primary key %v does not match DDL: %s", table.Name, table.PrimaryKey, statement)
+			}
 		}
 	}
 	if !slices.Equal(OwnedTables(), schemaownership.Names(tables)) {
