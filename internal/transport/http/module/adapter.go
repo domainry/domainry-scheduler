@@ -480,7 +480,6 @@ type runResponse struct {
 	LeaseOwner        string                     `json:"lease_owner,omitempty"`
 	LeaseExpiresAt    string                     `json:"lease_expires_at,omitempty"`
 	FencingToken      int64                      `json:"fencing_token,omitempty"`
-	CorrelationID     string                     `json:"correlation_id,omitempty"`
 	DownstreamReceipt *downstreamReceiptResponse `json:"downstream_receipt,omitempty"`
 	CreatedAt         string                     `json:"created_at,omitempty"`
 	UpdatedAt         string                     `json:"updated_at,omitempty"`
@@ -497,7 +496,7 @@ func projectRun(value schedulersdk.Run) runResponse {
 	return runResponse{ID: value.ID, RunID: value.RunID, DefinitionKey: value.Trigger.DefinitionKey, Status: value.Status,
 		Attempt: value.Trigger.Attempt, ScheduledFor: formatTime(value.Trigger.ScheduledFor), WindowKey: value.Trigger.WindowKey, ErrorMessage: value.LastError,
 		LeaseOwner: value.Lease.Owner, LeaseExpiresAt: formatTime(value.Lease.ExpiresAt), FencingToken: value.Lease.Token,
-		CorrelationID: value.DownstreamReceipt.ID, DownstreamReceipt: projectDownstreamReceipt(value.DownstreamReceipt), CreatedAt: formatTime(value.CreatedAt), UpdatedAt: formatTime(value.UpdatedAt)}
+		DownstreamReceipt: projectDownstreamReceipt(value.DownstreamReceipt), CreatedAt: formatTime(value.CreatedAt), UpdatedAt: formatTime(value.UpdatedAt)}
 }
 
 func projectDownstreamReceipt(value schedulersdk.DownstreamReceipt) *downstreamReceiptResponse {

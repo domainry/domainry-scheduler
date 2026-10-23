@@ -26,7 +26,7 @@ Ask whether there is an existing process instance. If yes, persist its wait/cont
 
 | Business requirement | Adapt with | Concrete implementation | Wrong adaptation |
 | --- | --- | --- | --- |
-| One approval instance must resume at its deadline | Workflow wait/timer | Persist deadline and correlation inside the Workflow instance; resume exactly that instance once, including after restart | Creating a standalone recurring Scheduler definition for each approval |
+| One approval instance must resume at its deadline | Workflow wait/timer | Persist the deadline and explicit process/node identity inside the Workflow instance; resume exactly that instance once, including after restart | Creating a standalone recurring Scheduler definition for each approval |
 | Every night the system scans all overdue approvals | Scheduler recurrence targeting a bounded scan Operation | Scheduler owns nightly timezone/catch-up behavior and queryable run history; the target queries authorized overdue work and acts idempotently | Keeping one Workflow instance alive forever to implement a global nightly loop |
 | Workflow retries a step shortly after a transient owner failure | Workflow step retry when it belongs to process execution | Preserve step/process context and target idempotency in Workflow | Creating a reusable Scheduler schedule for an internal step retry |
 | A monthly Workflow must start as a new process instance | Scheduler targeting Workflow start | Give each calendar occurrence a stable run key and typed period input; Workflow owns the newly started process | Modeling recurrence as a wait at the end of one never-ending Workflow instance |
@@ -34,7 +34,7 @@ Ask whether there is an existing process instance. If yes, persist its wait/cont
 
 ## Example
 
-Apply the same question—“does time resume an existing durable instance, or independently start reusable work?”—to each request. “Resume this approval tomorrow” keeps correlation and the one-time timer in Workflow. “Every day at 09:00 scan all overdue approvals” creates new independent work and belongs to Scheduler. “Remind this user at their chosen absolute time” stays in an existing Workflow when it is one step of that process; otherwise it needs a business-owned appointment/reminder model, not one global Schedule per record.
+Apply the same question—“does time resume an existing durable instance, or independently start reusable work?”—to each request. “Resume this approval tomorrow” keeps the explicit process/node identity and the one-time timer in Workflow. “Every day at 09:00 scan all overdue approvals” creates new independent work and belongs to Scheduler. “Remind this user at their chosen absolute time” stays in an existing Workflow when it is one step of that process; otherwise it needs a business-owned appointment/reminder model, not one global Schedule per record.
 
 ## Permissions and scope
 
