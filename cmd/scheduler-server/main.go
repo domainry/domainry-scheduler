@@ -20,6 +20,7 @@ import (
 
 	"github.com/domainry/domainry-foundation/logging"
 	"github.com/domainry/domainry-foundation/processhost"
+	"github.com/domainry/domainry-foundation/telemetry"
 	ormsqlite "github.com/domainry/domainry-orm/sqlite"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/dispatchgateway"
@@ -196,7 +197,7 @@ func openOwnedDatabase(ctx context.Context, config configuration) (*sql.DB, erro
 		}
 		dsn = resolved
 	}
-	database, err := sql.Open(config.sqlDriver, dsn)
+	database, err := telemetry.OpenObservedSQL(config.sqlDriver, dsn, "runtime", nil)
 	if err != nil {
 		return nil, fmt.Errorf("open Scheduler SaaS database: %w", err)
 	}

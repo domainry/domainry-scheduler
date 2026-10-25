@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/domainry/domainry-foundation/telemetry"
 	schedulersdk "github.com/domainry/domainry-scheduler-sdk"
 	"github.com/domainry/domainry-scheduler-sdk/modulehost"
 )
@@ -34,7 +35,18 @@ func New(connections modulehost.HTTPConnectionProvider, client Client) *Executor
 	if client == nil {
 		client = http.DefaultClient
 	}
+	if native, ok := client.(*http.Client); ok {
+		client = telemetry.InstrumentHTTPClient(native, "domainry.scheduler.dispatch")
+	} else {
+		client = telemetry.InstrumentHTTPClient(&http.Client{Transport: executorRoundTripper{client: client}}, "domainry.scheduler.dispatch")
+	}
 	return &Executor{connections: connections, client: client}
+}
+
+type executorRoundTripper struct{ client Client }
+
+func (transport executorRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport.client.Do(request)
 }
 
 type ExecutionError struct {
@@ -71,6 +83,7 @@ func (e *Executor) Dispatch(ctx context.Context, trigger schedulersdk.Trigger) (
 		requestCtx, cancel = context.WithTimeout(ctx, operation.Timeout)
 	}
 	defer cancel()
+	requestCtx = telemetry.WithHTTPClientOperation(requestCtx, "scheduler.dispatch")
 	body := []byte(trigger.Target.Payload)
 	request, err := http.NewRequestWithContext(requestCtx, method, endpoint, bytes.NewReader(body))
 	if err != nil {
